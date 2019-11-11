@@ -17,7 +17,7 @@ from tqdm import tqdm
 class Tester(object):
 
     def __init__(self, model = None, data_loader = None, use_gpu = True):
-        base_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "../release/Base.so"))
+        base_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/release/Base.so"))
         self.lib = ctypes.cdll.LoadLibrary(base_file)
         self.lib.testHead.argtypes = [ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64]
         self.lib.testTail.argtypes = [ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64]

@@ -1,0 +1,8 @@
+.idea/
+*.s
+*.so
+*.d
+*.dylib
+*.dll
+*.lib
+*.out

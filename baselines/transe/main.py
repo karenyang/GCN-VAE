@@ -21,7 +21,7 @@ test_dataloader = TestDataLoader("./data/FB15K237/", "link")
 
 # define the model
 transe = TransE(
-	ent_tot = train_dataloader.get_ent_tot(), #entity total
+	ent_tot = train_dataloader.get_ent_tot(), # entity total
 	rel_tot = train_dataloader.get_rel_tot(), # relation total
 	dim = 200,
 	p_norm = 1,

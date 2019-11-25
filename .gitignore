@@ -1,4 +1,4 @@
-.idea/
+.idea/*
 *.s
 *.so
 *.d

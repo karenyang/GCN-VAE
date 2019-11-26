@@ -7,6 +7,16 @@ from dgl import function as fn
 from dgl.nn.pytorch import utils
 
 
+
+class EmbeddingLayer(nn.Module):
+    def __init__(self, num_nodes, h_dim):
+        super(EmbeddingLayer, self).__init__()
+        self.embedding = nn.Embedding(num_nodes, h_dim)
+
+    def forward(self, g, h, r, norm):
+        return self.embedding(h.squeeze())
+
+
 class RelGraphConv(nn.Module):
     r"""Relational graph convolution layer.
     Relational graph convolution is introduced in "`Modeling Relational Data with Graph
@@ -111,7 +121,6 @@ class RelGraphConv(nn.Module):
 
     def basis_message_func(self, edges):
         """Message function for basis regularizer"""
-
         if self.num_bases < self.num_rels:
             # generate all weights from bases
             weight = self.weight.view(self.num_bases,
@@ -178,5 +187,4 @@ class RelGraphConv(nn.Module):
         if self.activation:
             node_repr = self.activation(node_repr)
         node_repr = self.dropout(node_repr)
-        print("node repr", node_repr.shape)
         return node_repr

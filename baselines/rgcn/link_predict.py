@@ -20,29 +20,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 import random
 from dgl.contrib.data import load_data
-from dgl.nn.pytorch import RelGraphConv
 
-from model import BaseRGCN
+from model import RGCN, EmbeddingLayer
 
 import utils
 
-class EmbeddingLayer(nn.Module):
-    def __init__(self, num_nodes, h_dim):
-        super(EmbeddingLayer, self).__init__()
-        self.embedding = torch.nn.Embedding(num_nodes, h_dim)
 
-    def forward(self, g, h, r, norm):
-        return self.embedding(h.squeeze())
-
-class RGCN(BaseRGCN):
-    def build_input_layer(self):
-        return EmbeddingLayer(self.num_nodes, self.h_dim)
-
-    def build_hidden_layer(self, idx):
-        act = F.relu if idx < self.num_hidden_layers - 1 else None
-        return RelGraphConv(self.h_dim, self.h_dim, self.num_rels, "bdd",
-                self.num_bases, activation=act, self_loop=True,
-                dropout=self.dropout)
 
 class LinkPredict(nn.Module):
     def __init__(self, in_dim, h_dim, num_rels, num_bases=-1,
@@ -233,19 +216,19 @@ if __name__ == '__main__':
             help="number of minimum training epochs")
     parser.add_argument("-d", "--dataset", type=str, required=True,
             help="dataset to use")
-    parser.add_argument("--eval-batch-size", type=int, default=500,
+    parser.add_argument("--eval-batch-size", type=int, default=8,
             help="batch size when evaluating")
     parser.add_argument("--regularization", type=float, default=0.01,
             help="regularization weight")
     parser.add_argument("--grad-norm", type=float, default=1.0,
             help="norm to clip gradient to")
-    parser.add_argument("--graph-batch-size", type=int, default=30000,
+    parser.add_argument("--graph-batch-size", type=int, default=10000,
             help="number of edges to sample in each iteration")
     parser.add_argument("--graph-split-size", type=float, default=0.5,
             help="portion of edges used as positive sample")
-    parser.add_argument("--negative-sample", type=int, default=10,
+    parser.add_argument("--negative-sample", type=int, default=1,
             help="number of negative samples per positive sample")
-    parser.add_argument("--evaluate-every", type=int, default=500,
+    parser.add_argument("--evaluate-every", type=int, default=100,
             help="perform evaluation every n epochs")
     parser.add_argument("--edge-sampler", type=str, default="uniform",
             help="type of edge sampler: 'uniform' or 'neighbor'")

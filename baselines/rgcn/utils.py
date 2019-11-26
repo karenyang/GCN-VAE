@@ -125,6 +125,7 @@ def comp_deg_norm(g):
     norm[np.isinf(norm)] = 0
     return norm
 
+
 def build_graph_from_triplets(num_nodes, num_rels, triplets):
     """ Create a DGL graph. The graph is bidirectional because RGCN authors
         use reversed relations.
@@ -162,6 +163,7 @@ def negative_sampling(pos_samples, num_entity, negative_rate):
     neg_samples[obj, 2] = values[obj]
 
     return np.concatenate((pos_samples, neg_samples)), labels
+
 
 #######################################################################
 #

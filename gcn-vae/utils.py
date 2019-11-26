@@ -125,6 +125,14 @@ def comp_deg_norm(g):
     norm[np.isinf(norm)] = 0
     return norm
 
+def node_norm_to_edge_norm(g, node_norm):
+    g = g.local_var()
+    # convert to edge norm
+    g.ndata['norm'] = node_norm
+    g.apply_edges(lambda edges : {'norm' : edges.dst['norm']})
+    return g.edata['norm']
+
+
 def build_graph_from_triplets(num_nodes, num_rels, triplets):
     """ Create a DGL graph. The graph is bidirectional because RGCN authors
         use reversed relations.
@@ -197,7 +205,7 @@ def perturb_and_get_rank(embedding, w, a, r, b, test_size, batch_size=100):
         ranks.append(sort_and_rank(score, target))
     return torch.cat(ranks)
 
-# TODO : implement filtered metrics
+# TODO : implement filtered metrics (by filtering out corrupted triplets that are already in knowledge base)
 # return MRR (raw), and Hits @ (1, 3, 10)
 def calc_mrr(embedding, w, test_triplets, hits=[], eval_bz=100):
     with torch.no_grad():

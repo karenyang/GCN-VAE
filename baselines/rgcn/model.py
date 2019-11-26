@@ -1,4 +1,9 @@
 import torch.nn as nn
+import torch
+from dgl.nn.pytorch import RelGraphConv
+import torch.nn.functional as F
+
+
 
 class BaseRGCN(nn.Module):
     def __init__(self, num_nodes, h_dim, out_dim, num_rels, num_bases,
@@ -46,3 +51,24 @@ class BaseRGCN(nn.Module):
         for layer in self.layers:
             h = layer(g, h, r, norm)
         return h
+
+
+class EmbeddingLayer(nn.Module):
+    def __init__(self, num_nodes, h_dim):
+        super(EmbeddingLayer, self).__init__()
+        self.embedding = torch.nn.Embedding(num_nodes, h_dim)
+
+    def forward(self, g, h, r, norm):
+        return self.embedding(h.squeeze())
+
+
+class RGCN(BaseRGCN):
+    def build_input_layer(self):
+        return EmbeddingLayer(self.num_nodes, self.h_dim)
+
+    def build_hidden_layer(self, idx):
+        act = F.relu if idx < self.num_hidden_layers - 1 else None
+        return RelGraphConv(self.h_dim, self.h_dim, self.num_rels, "bdd",
+                            self.num_bases, activation=act, self_loop=True,
+                            dropout=self.dropout)
+

@@ -94,9 +94,8 @@ def main(args):
             data, labels = data.cuda(), labels.cuda()
 
         t0 = time.time()
-        z = model.encoder(g, node_id, edge_type, edge_norm)
+        z = model.forward(g, node_id, edge_type, edge_norm)
 
-        exit(0)
         #TODO: write loss fuction
         loss = eval.get_loss(g, z, data, labels)
         t1 = time.time()

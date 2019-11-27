@@ -2,15 +2,15 @@
 # pylint: disable= no-member, arguments-differ, invalid-name
 import torch
 from torch import nn
-import torch.nn.function as F
+import torch.nn.functional as F
 from dgl import function as fn
 from dgl.nn.pytorch import utils
 
 
 class Conv1d(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=1, bias=True, **kwargs):
-        super(Conv1d, self).__init__(in_channels, out_channels, kernel_size, bias, **kwargs)
-        self.conv1d = nn.conv1d(in_channels, out_channels, kernel_size=1, bias=True, **kwargs)
+        super(Conv1d, self).__init__()
+        self.conv1d = nn.Conv1d(in_channels, out_channels, kernel_size=1, bias=True, **kwargs)
 
     def forward(self, A):
         # since pytorch's conv1d assume channel in the middle (N,C,L), we need to transform the input's channel to the
@@ -26,20 +26,18 @@ class Conv1d(nn.Module):
 
 class RefineRelationAdjLayer(nn.Module):
     def __init__(self, act=None, normalize=True, non_negative=False, **kwargs):
-        super(RefineRelationAdjLayer, self).__init__( act, normalize, **kwargs)
+        super(RefineRelationAdjLayer, self).__init__()
         self.normalize = normalize
         self.non_negative = non_negative
         self.act = act
 
     def forward(self, z):
+        # import ipdb; ipdb.set_trace()
         if self.normalize:
             z = F.normalize(z, p=2, dim=-1)
-        R = z.matmul(z.transpose(-1,-2))
+        R = z.matmul(z.transpose(-1, -2))
         if self.non_negative:
             R = R + torch.ones_like(R)
-        # normalized recon (make it symmetrical)
-        d = R.sum(dim=1).pow(-0.5)
-        R = torch.expand_dims(d, 0) * R * torch.expand_dims(d, 1)
         if self.act is not None:
             R = self.act(z)
         if len(R.shape) == 2:
@@ -49,11 +47,13 @@ class RefineRelationAdjLayer(nn.Module):
 
 class RefineLatentFeatLayer(nn.Module):
     def __init__(self, input_dim, out_dim, act=None, **kwargs):
-        super(RefineLatentFeatLayer, self).__init__(input_dim, out_dim, act, **kwargs)
+        super(RefineLatentFeatLayer, self).__init__()
         self.act = act
         self.linear = nn.Linear(input_dim, out_dim)
 
     def forward(self, R, z, x=None):
+        import ipdb;
+        ipdb.set_trace()
         z = self.linear(z)
         z = R.matmul(R.transpose(-1, -2).matmul(z))
         if x is not None:

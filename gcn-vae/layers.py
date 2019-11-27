@@ -2,10 +2,65 @@
 # pylint: disable= no-member, arguments-differ, invalid-name
 import torch
 from torch import nn
-
+import torch.nn.function as F
 from dgl import function as fn
 from dgl.nn.pytorch import utils
 
+
+class Conv1d(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=1, bias=True, **kwargs):
+        super(Conv1d, self).__init__(in_channels, out_channels, kernel_size, bias, **kwargs)
+        self.conv1d = nn.conv1d(in_channels, out_channels, kernel_size=1, bias=True, **kwargs)
+
+    def forward(self, A):
+        # since pytorch's conv1d assume channel in the middle (N,C,L), we need to transform the input's channel to the
+        # middle and at the end transform it back into (C,N,L)
+        if len(A.shape) == 2:
+            A = A.unsqueeze(1)
+        else:
+            A = A.transpose(0, 1)
+        A = self.conv1d(A)
+        A = A.transpose(0, 1)
+        return A
+
+
+class RefineRelationAdjLayer(nn.Module):
+    def __init__(self, act=None, normalize=True, non_negative=False, **kwargs):
+        super(RefineRelationAdjLayer, self).__init__( act, normalize, **kwargs)
+        self.normalize = normalize
+        self.non_negative = non_negative
+        self.act = act
+
+    def forward(self, z):
+        if self.normalize:
+            z = F.normalize(z, p=2, dim=-1)
+        R = z.matmul(z.transpose(-1,-2))
+        if self.non_negative:
+            R = R + torch.ones_like(R)
+        # normalized recon (make it symmetrical)
+        d = R.sum(dim=1).pow(-0.5)
+        R = torch.expand_dims(d, 0) * R * torch.expand_dims(d, 1)
+        if self.act is not None:
+            R = self.act(z)
+        if len(R.shape) == 2:
+            R = R.unsqueeze(0)
+        return R
+
+
+class RefineLatentFeatLayer(nn.Module):
+    def __init__(self, input_dim, out_dim, act=None, **kwargs):
+        super(RefineLatentFeatLayer, self).__init__(input_dim, out_dim, act, **kwargs)
+        self.act = act
+        self.linear = nn.Linear(input_dim, out_dim)
+
+    def forward(self, R, z, x=None):
+        z = self.linear(z)
+        z = R.matmul(R.transpose(-1, -2).matmul(z))
+        if x is not None:
+            z = z + R.matmul(R.transpose(-1, -2).matmul(x))
+        if self.act is not None:
+            return self.act(z)
+        return z
 
 
 class EmbeddingLayer(nn.Module):
@@ -21,21 +76,6 @@ class RelGraphConv(nn.Module):
     r"""Relational graph convolution layer.
     Relational graph convolution is introduced in "`Modeling Relational Data with Graph
     Convolutional Networks <https://arxiv.org/abs/1703.06103>`__"
-    and can be described as below:
-    .. math::
-       h_i^{(l+1)} = \sigma(\sum_{r\in\mathcal{R}}
-       \sum_{j\in\mathcal{N}^r(i)}\frac{1}{c_{i,r}}W_r^{(l)}h_j^{(l)}+W_0^{(l)}h_i^{(l)})
-    where :math:`\mathcal{N}^r(i)` is the neighbor set of node :math:`i` w.r.t. relation
-    :math:`r`. :math:`c_{i,r}` is the normalizer equal
-    to :math:`|\mathcal{N}^r(i)|`. :math:`\sigma` is an activation function. :math:`W_0`
-    is the self-loop weight.
-    The basis regularization decomposes :math:`W_r` by:
-    .. math::
-       W_r^{(l)} = \sum_{b=1}^B a_{rb}^{(l)}V_b^{(l)}
-    where :math:`B` is the number of bases.
-    The block-diagonal-decomposition regularization decomposes :math:`W_r` into :math:`B`
-    number of block diagonal matrices. We refer :math:`B` as the number of bases.
-    Parameters
     ----------
     in_feat : int
         Input feature size.
@@ -56,6 +96,7 @@ class RelGraphConv(nn.Module):
     dropout : float, optional
         Dropout rate. Default: 0.0
     """
+
     def __init__(self,
                  in_feat,
                  out_feat,

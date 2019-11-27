@@ -2,8 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import normal
-from layers import RelGraphConv, EmbeddingLayer
-
+from layers import RelGraphConv, EmbeddingLayer, Conv1d, RefineLatentFeatLayer, RefineRelationAdjLayer
 
 
 class KGVAE(nn.Module):
@@ -24,10 +23,6 @@ class KGVAE(nn.Module):
         self.build_encoder()
         self.build_decoder()
 
-
-    def build_decoder(self):
-        pass
-
     def build_encoder(self):
         self.encoder_module = nn.ModuleList()
         # i2h
@@ -43,13 +38,13 @@ class KGVAE(nn.Module):
 
     def build_rconv_layer(self, activation=False):
         act = F.relu if activation else None
-        return RelGraphConv(self.h_dim, self.h_dim, self.num_rels, "bdd",
+        return RelGraphConv(self.h_dim, self.h_dim, self.num_rels, "basis",
                             self.num_bases, activation=act, self_loop=True,
                             dropout=self.dropout)
 
     def get_z(self, z_mean, z_log_std, prior="normal"):
         if prior == 'normal':
-           return normal.Normal(z_mean, z_log_std).sample()
+            return normal.Normal(z_mean, z_log_std).sample()
         else:
             # TODO: Flow transforms
             return None
@@ -57,11 +52,41 @@ class KGVAE(nn.Module):
     def encoder(self, g, h, r, norm):
         for layer in self.encoder_module[:-2]:
             h = layer(g, h, r, norm)
+        self.h_cache = h
         # z_mean and z_sigma -> latent distribution(maybe with flow transform) -> samples
         z_mean = self.encoder_module[-2](g, h, r, norm)
         z_log_std = self.encoder_module[-1](g, h, r, norm)
         z = self.get_z(z_mean, z_log_std, prior='normal')
         return z
 
-    def forward(self,g, h, r, norm):
+    def build_decoder(self):
+        self.refine_relational_adj_0 = RefineRelationAdjLayer(act=nn.Sigmoid(), normalize=True, non_negative=False)
+        self.refine_latent_features_1 = RefineLatentFeatLayer(input_dim=self.h_dim, out_dim=self.h_dim)
+        self.refine_relational_adj_1 = RefineRelationAdjLayer(act=nn.Sigmoid(), normalize=True, non_negative=False)
+        self.conv1d_1 = Conv1d(in_channels=1, out_channels=self.num_bases, kernel_size=1, bias=True)
+        self.refine_latent_features_2 = RefineLatentFeatLayer(self.h_dim, self.h_dim)
+        self.refine_relational_adj_2 = RefineRelationAdjLayer(act=nn.Sigmoid(), normalize=True, non_negative=False)
+        self.conv1d_2 = Conv1d(in_channels=self.num_bases, out_channels=self.num_rels, kernel_size=3, bias=True)
+        self.refine_latent_features_3 = RefineLatentFeatLayer(self.h_dim, self.h_dim)
+        self.refine_relational_adj_3 = RefineRelationAdjLayer(act=nn.Sigmoid(), normalize=True, non_negative=True)
+
+    def decoder(self, z, x):
+        """
+        Reconstructed relational matrix from input structure.
+        :param z: encoder output, z samples
+        :param x: input node attributes
+        :return: reconstructed relational adjacency matrix
+        """
+        R = self.refine_relational_adj_0.forward(z)  # N x N (N is self.num_nodes)
+        z = self.refine_latent_features_1.forward(R, z, x)
+        R = self.refine_relational_adj_1.forward(z)
+        R = self.conv1d_1.forward(R)  # 1 x N x N -> num_bases x N x N
+        z = self.refine_latent_features_2.forward(R, z, self.h_cache)
+        R = self.refine_relational_adj_2.forward(z)
+        R = self.conv1d_2.forward(R)  # num_bases x N x N -> num_rel x N x N
+        z = self.refine_latent_features_3.forward(R, z, None)
+        R = self.refine_relational_adj_3.forward(z)
+        return R
+
+    def forward(self, g, h, r, norm):
         return self.encoder(g, h, r, norm)

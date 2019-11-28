@@ -87,8 +87,11 @@ def main(args):
 
     epoch = 0
     best_acc = 0.
-    accuracies = []
-    f1s = []
+    mrs= []
+    mrrs=[]
+    hit1s=[]
+    hit3s=[]
+    hit10s=[]
     train_records =  open("train_records.txt", "w")
     val_records = open("val_records.txt", "w")
     while True:
@@ -117,7 +120,7 @@ def main(args):
 
         t0 = time.time()
         recon = model(g, node_id, edge_type, edge_norm)
-        loss, recon_loss, kl, accu, f1 = model.get_loss(recon, pos_samples, neg_samples)
+        loss, recon_loss, kl, accu, mr, mrr, hit1, hit3 ,hit10 = model.get_loss(recon, pos_samples, neg_samples)
         train_records.write("{:d};{:.4f};{:.4f};{:.4f}\n".format(epoch,loss,recon_loss,kl))
         train_records.flush()
         t1 = time.time()
@@ -128,9 +131,8 @@ def main(args):
         forward_time.append(t1 - t0)
         backward_time.append(t2 - t1)
         print(
-            "Epoch {:04d} | Loss {:.4f} | Recon loss {:.4f} | KL {:.4f} | acc {:.4f} | f1 {:.4f} | Forward {:.4f}s | Backward {:.4f}s".
-                format(epoch, loss.item(), recon_loss.item(), kl.item(), accu, f1,
-                       forward_time[-1], backward_time[-1]))
+            "Epoch {:04d} | Loss {:.4f} | Recon loss {:.4f} | KL {:.4f} | mr {:.4f} | mrr {:.4f} | hit1 {:.4f} | hit3 {:.4f} | hit10 {:.4f} ".
+                format(epoch, loss.item(), recon_loss.item(), kl.item(), mr, mrr, hit1,hit3,hit10))
 
         optimizer.zero_grad()
 
@@ -138,8 +140,11 @@ def main(args):
         if epoch % args.evaluate_every == 1:
             model.eval()
             print("start eval")
-            _accuracy_l = []
-            _f1_l = []
+            _mr_l = []
+            _mrr_l = []
+            _hit1_l = []
+            _hit3_l = []
+            _hit10_l = []
             for i in range(args.eval_batch_size):
                 val_g, val_node_id, val_edge_type, val_node_norm, val_pos_samples, val_neg_samples = utils.generate_sampled_graph_and_labels(
                     valid_data, args.graph_batch_size, args.graph_split_size,
@@ -156,24 +161,33 @@ def main(args):
                     val_pos_samples, val_neg_samples = val_pos_samples.cuda(), val_neg_samples.cuda()
 
                 recon = model(val_g, val_node_id, val_edge_type, val_edge_norm)
-                _, _, _, _accu, _f1 = model.get_loss(recon, val_pos_samples, val_neg_samples)
-                _accuracy_l.append(_accu)
-                _f1_l.append(_f1)
-            accuracies.append(np.mean(_accuracy_l))
-            f1s.append(np.mean(_f1_l))
+                loss, recon_loss, kl, accu, mr, mrr, hit1, hit3 ,hit10 = model.get_loss(recon, val_pos_samples, val_neg_samples)
+                _mr_l.append(mr)
+                _mrr_l.append(mrr)
+                _hit1_l.append(hit1)
+                _hit3_l.append(hit3)
+                _hit10_l.append(hit10)
+            mrs.append(np.mean(_mr_l))
+            mrrs.append(np.mean(_mrr_l))
+            hit1s.append(np.mean(_hit1_l))
+            hit3s.append(np.mean(_hit3_l))
+            hit10s.append(np.mean(_hit10_l))
+
             print(
-                "[EVAL] Epoch {:04d} | acc {:.4f} | f1  {:.4f} ".
-                    format(epoch, accuracies[-1], f1s[-1]))
-            val_records.write("{:d};{:.4f};{:.4f}\n".format(epoch,accuracies[-1], f1s[-1]))
+                "[EVAL]Epoch {:04d} | mr {:.4f} | mrr {:.4f} | hit1 {:.4f} | hit3 {:.4f} | hit10 {:.4f}".
+                    format(epoch, mrs[-1], mrrs[-1], hit1s[-1], hit3s[-1], hit10s[-1]))
+
+            val_records.write("{:d};{:.4f};{:.4f};{:.4f};{:.4f};{:.4f}\n".format(epoch, mrs[-1], mrrs[-1], hit1s[-1], hit3s[-1], hit10s[-1]))
             val_records.flush()
             # save best model
-            if accuracies[-1] < best_acc:
+            if hit10s[-1] < best_acc:
                 if epoch >= args.n_epochs:
                     break
             else:
-                best_acc = accuracies[-1]
-                torch.save({'state_dict': model.state_dict(), 'epoch': epoch},
-                           'model_state.pth')
+                best_acc = hit10s[-1]
+                print("Best hit10", hit10s)
+            torch.save({'state_dict': model.state_dict(), 'epoch': epoch},
+                       'model_state.pth')
 
     print("training done")
     print("Mean forward time: {:4f}s".format(np.mean(forward_time)))
@@ -185,13 +199,13 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='GCN_VAE for Knowledge Graph ')
     parser.add_argument("--dropout", type=float, default=0.2,
                         help="dropout probability")
-    parser.add_argument("--n-hidden", type=int, default=500,
+    parser.add_argument("--n-hidden", type=int, default=400,
                         help="number of hidden units")
     parser.add_argument("--gpu", type=int, default=-1,
                         help="gpu")
     parser.add_argument("--lr", type=float, default=1e-2,
                         help="learning rate")
-    parser.add_argument("--n-bases", type=int, default=20,
+    parser.add_argument("--n-bases", type=int, default=40,
                         help="number of weight blocks for each relation")
     parser.add_argument("--n-layers", type=int, default=2,
                         help="number of propagation rounds")
@@ -199,21 +213,21 @@ if __name__ == '__main__':
                         help="number of minimum training epochs")
     parser.add_argument("-d", "--dataset", type=str, required=True,
                         help="dataset to use")
-    parser.add_argument("--eval-batch-size", type=int, default=5,
+    parser.add_argument("--eval-batch-size", type=int, default=1,
                         help="batch size when evaluating")
     parser.add_argument("--regularization", type=float, default=0.01,
                         help="regularization weight")
     parser.add_argument("--grad-norm", type=float, default=1.0,
                         help="norm to clip gradient to")
-    parser.add_argument("--graph-batch-size", type=int, default=800,
+    parser.add_argument("--graph-batch-size", type=int, default=700,
                         help="number of edges to sample in each iteration")
     parser.add_argument("--graph-split-size", type=float, default=0.5,
                         help="portion of edges used as positive sample")
-    parser.add_argument("--negative-sample", type=int, default=3,
+    parser.add_argument("--negative-sample", type=int, default=10,
                         help="number of negative samples per positive sample")
-    parser.add_argument("--evaluate-every", type=int, default=100,
+    parser.add_argument("--evaluate-every", type=int, default=500,
                         help="perform evaluation every n epochs")
-    parser.add_argument("--edge-sampler", type=str, default="neighbor",
+    parser.add_argument("--edge-sampler", type=str, default="uniform",
                         help="type of edge sampler: 'uniform' or 'neighbor'")
     parser.add_argument("--model-state-file", type=str, default="",
                         help="model checkpoint to load")

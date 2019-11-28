@@ -129,8 +129,8 @@ def generate_sampled_graph_and_labels(triplets, sample_size, split_size,
 def comp_deg_norm(g):
     g = g.local_var()
     in_deg = g.in_degrees(range(g.number_of_nodes())).float().numpy()
-    norm = 1.0 / in_deg
-    norm[np.isinf(norm)] = 0
+    norm = np.zeros_like(in_deg)
+    norm[in_deg!=0] = 1.0 / in_deg[in_deg!=0]
     return norm
 
 

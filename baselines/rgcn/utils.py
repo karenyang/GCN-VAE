@@ -8,7 +8,7 @@ https://github.com/MichSchli/RelationPrediction
 import numpy as np
 import torch
 import dgl
-
+from tqdm import tqdm
 #######################################################################
 #
 # Utility function for building training and testing graphs
@@ -93,7 +93,7 @@ def generate_sampled_graph_and_labels(triplets, sample_size, split_size,
 
     # relabel nodes to have consecutive node ids
     edges = triplets[edges]
-    src, rel, dst = edges.transpose()
+    src, rel, dst = np.array(edges).transpose()
     uniq_v, edges = np.unique((src, dst), return_inverse=True)
     src, dst = np.reshape(edges, (2, -1))
     relabeled_edges = np.stack((src, rel, dst)).transpose()
@@ -112,8 +112,8 @@ def generate_sampled_graph_and_labels(triplets, sample_size, split_size,
     rel = rel[graph_split_ids]
 
     # build DGL graph
-    print("# sampled nodes: {}".format(len(uniq_v)))
-    print("# sampled edges: {}".format(len(src) * 2))
+    # print("# sampled nodes: {}".format(len(uniq_v)))
+    # print("# sampled edges: {}".format(len(src) * 2))
     g, rel, norm = build_graph_from_triplets(len(uniq_v), num_rels,
                                              (src, rel, dst))
     return g, uniq_v, rel, norm, samples, labels
@@ -141,7 +141,7 @@ def build_graph_from_triplets(num_nodes, num_rels, triplets):
     dst, src, rel = np.array(edges).transpose()
     g.add_edges(src, dst)
     norm = comp_deg_norm(g)
-    print("# nodes: {}, # edges: {}".format(num_nodes, len(src)))
+    # print("# nodes: {}, # edges: {}".format(num_nodes, len(src)))
     return g, rel, norm
 
 def build_test_graph(num_nodes, num_rels, edges):
@@ -182,8 +182,8 @@ def perturb_and_get_rank(embedding, w, a, r, b, test_size, batch_size=100):
     """
     n_batch = (test_size + batch_size - 1) // batch_size
     ranks = []
-    for idx in range(n_batch):
-        print("batch {} / {}".format(idx, n_batch))
+    for idx in tqdm(range(n_batch)):
+        # print("batch {} / {}".format(idx, n_batch))
         batch_start = idx * batch_size
         batch_end = min(test_size, (idx + 1) * batch_size)
         batch_a = a[batch_start: batch_end]
@@ -201,7 +201,7 @@ def perturb_and_get_rank(embedding, w, a, r, b, test_size, batch_size=100):
 
 # TODO (lingfan): implement filtered metrics
 # return MRR (raw), and Hits @ (1, 3, 10)
-def calc_mrr(embedding, w, test_triplets, hits=[], eval_bz=100):
+def calc_mrr(embedding, w, test_triplets, hits=[1,3,10], eval_bz=100):
     with torch.no_grad():
         s = test_triplets[:, 0]
         r = test_triplets[:, 1]
@@ -216,10 +216,15 @@ def calc_mrr(embedding, w, test_triplets, hits=[], eval_bz=100):
         ranks = torch.cat([ranks_s, ranks_o])
         ranks += 1 # change to 1-indexed
 
+        mr = torch.mean(ranks.float())
+        print("MR (raw): {:.6f}".format(mr.item()))
+
         mrr = torch.mean(1.0 / ranks.float())
         print("MRR (raw): {:.6f}".format(mrr.item()))
 
+        _hits = []
         for hit in hits:
             avg_count = torch.mean((ranks <= hit).float())
+            _hits.append(avg_count.item())
             print("Hits (raw) @ {}: {:.6f}".format(hit, avg_count.item()))
-    return mrr.item()
+    return mr.item(), mrr.item(), _hits

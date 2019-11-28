@@ -39,7 +39,7 @@ class RefineRelationAdjLayer(nn.Module):
         if self.non_negative:
             R = R + torch.ones_like(R)
         if self.act is not None:
-            R = self.act(z)
+            R = self.act(R)
         if len(R.shape) == 2:
             R = R.unsqueeze(0)
         return R
@@ -52,8 +52,8 @@ class RefineLatentFeatLayer(nn.Module):
         self.linear = nn.Linear(input_dim, out_dim)
 
     def forward(self, R, z, x=None):
-        import ipdb;
-        ipdb.set_trace()
+        # import ipdb;
+        # ipdb.set_trace()
         z = self.linear(z)
         z = R.matmul(R.transpose(-1, -2).matmul(z))
         if x is not None:
@@ -68,7 +68,7 @@ class EmbeddingLayer(nn.Module):
         super(EmbeddingLayer, self).__init__()
         self.embedding = nn.Embedding(num_nodes, h_dim)
 
-    def forward(self, g, h, r, norm):
+    def forward(self, h):
         return self.embedding(h.squeeze())
 
 

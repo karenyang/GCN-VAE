@@ -164,8 +164,6 @@ def main(args):
         # validation
         if epoch % args.evaluate_every == 0:
             # perform validation on CPU because full graph is too large
-            if use_cuda:
-                model.cpu()
             model.eval()
             print("start eval")
             embed = model(test_graph, test_node_id, test_rel, test_norm)

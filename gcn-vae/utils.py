@@ -9,23 +9,28 @@ import numpy as np
 import torch
 import dgl
 
+
 #######################################################################
 #
 # Utility function for building training and testing graphs
 #
 #######################################################################
 
+def get_num_edges(g):
+    return len(g.edata)
+
 def get_adj_and_degrees(num_nodes, triplets):
     """ Get adjacency list and degrees of the graph
     """
     adj_list = [[] for _ in range(num_nodes)]
-    for i,triplet in enumerate(triplets):
+    for i, triplet in enumerate(triplets):
         adj_list[triplet[0]].append([i, triplet[2]])
         adj_list[triplet[2]].append([i, triplet[0]])
 
     degrees = np.array([len(a) for a in adj_list])
     adj_list = [np.array(a) for a in adj_list]
     return adj_list, degrees
+
 
 def sample_edge_neighborhood(adj_list, degrees, n_triplets, sample_size):
     """Sample edges by neighborhool expansion.
@@ -35,7 +40,7 @@ def sample_edge_neighborhood(adj_list, degrees, n_triplets, sample_size):
     """
     edges = np.zeros((sample_size), dtype=np.int32)
 
-    #initialize
+    # initialize
     sample_counts = np.array([d for d in degrees])
     picked = np.array([False for _ in range(n_triplets)])
     seen = np.array([False for _ in degrees])
@@ -71,10 +76,12 @@ def sample_edge_neighborhood(adj_list, degrees, n_triplets, sample_size):
 
     return edges
 
+
 def sample_edge_uniform(adj_list, degrees, n_triplets, sample_size):
     """Sample edges uniformly from all the edges."""
     all_edges = np.arange(n_triplets)
     return np.random.choice(all_edges, sample_size, replace=False)
+
 
 def generate_sampled_graph_and_labels(triplets, sample_size, split_size,
                                       num_rels, adj_list, degrees,
@@ -89,17 +96,17 @@ def generate_sampled_graph_and_labels(triplets, sample_size, split_size,
     elif sampler == "neighbor":
         edges = sample_edge_neighborhood(adj_list, degrees, len(triplets), sample_size)
     else:
-        raise ValueError("Sampler type must be either 'uniform' or 'neighbor'.")
+        raise ValueError("Sampler type must be either 'uniform' or 'neighbor' or 'sequential' (for val only).")
 
     # relabel nodes to have consecutive node ids
     edges = triplets[edges]
-    src, rel, dst = edges.transpose()
+    src, rel, dst = np.array(edges).transpose()
     uniq_v, edges = np.unique((src, dst), return_inverse=True)
     src, dst = np.reshape(edges, (2, -1))
     relabeled_edges = np.stack((src, rel, dst)).transpose()
 
     # negative sampling
-    samples, labels = negative_sampling(relabeled_edges, len(uniq_v),
+    pos_samples, neg_samples = negative_sampling(relabeled_edges, len(uniq_v),
                                         negative_rate)
 
     # further split graph, only half of the edges will be used as graph
@@ -112,11 +119,12 @@ def generate_sampled_graph_and_labels(triplets, sample_size, split_size,
     rel = rel[graph_split_ids]
 
     # build DGL graph
-    print("# sampled nodes: {}".format(len(uniq_v)))
-    print("# sampled edges: {}".format(len(src) * 2))
-    g, rel, norm = build_graph_from_triplets(len(uniq_v), num_rels,
+    # print("# sampled nodes: {}".format(len(uniq_v)))
+    # print("# sampled edges: {}".format(len(src) * 2))
+    g, rel, norm = _build_graph_from_triplets(len(uniq_v), num_rels,
                                              (src, rel, dst))
-    return g, uniq_v, rel, norm, samples, labels
+    return g, uniq_v, rel, norm, pos_samples, neg_samples
+
 
 def comp_deg_norm(g):
     g = g.local_var()
@@ -125,15 +133,16 @@ def comp_deg_norm(g):
     norm[np.isinf(norm)] = 0
     return norm
 
+
 def node_norm_to_edge_norm(g, node_norm):
     g = g.local_var()
     # convert to edge norm
     g.ndata['norm'] = node_norm
-    g.apply_edges(lambda edges : {'norm' : edges.dst['norm']})
+    g.apply_edges(lambda edges: {'norm': edges.dst['norm']})
     return g.edata['norm']
 
 
-def build_graph_from_triplets(num_nodes, num_rels, triplets):
+def _build_graph_from_triplets(num_nodes, num_rels, triplets):
     """ Create a DGL graph. The graph is bidirectional because RGCN authors
         use reversed relations.
         This function also generates edge type and normalization factor
@@ -148,13 +157,32 @@ def build_graph_from_triplets(num_nodes, num_rels, triplets):
     dst, src, rel = np.array(edges).transpose()
     g.add_edges(src, dst)
     norm = comp_deg_norm(g)
-    print("# nodes: {}, # edges: {}".format(num_nodes, len(src)))
+    # print("# nodes: {}, # edges: {}".format(num_nodes, len(src)))
     return g, rel, norm
 
-def build_test_graph(num_nodes, num_rels, edges):
-    src, rel, dst = edges.transpose()
-    print("Test graph:")
-    return build_graph_from_triplets(num_nodes, num_rels, (src, rel, dst))
+
+def build_graph(num_nodes, num_rels, edges):
+    src, rel, dst = np.array(edges).transpose()
+    print("Val graph:")
+    return _build_graph_from_triplets(num_nodes, num_rels, (src, rel, dst))
+
+def kl_normal(qm, qv, pm, pv):
+    """
+    Computes the elem-wise KL divergence between two normal distributions KL(q || p) and
+    sum over the last dimension
+
+    Args:
+        qm: tensor: (batch, dim): q mean
+        qv: tensor: (batch, dim): q variance
+        pm: tensor: (batch, dim): p mean
+        pv: tensor: (batch, dim): p variance
+
+    Return:
+        kl: tensor: (batch,): kl between each sample
+    """
+    element_wise = 0.5 * (torch.log(pv) - torch.log(qv) + qv / pv + (qm - pm).pow(2) / pv - 1)
+    kl = element_wise.sum(-1)
+    return kl
 
 def negative_sampling(pos_samples, num_entity, negative_rate):
     size_of_batch = len(pos_samples)
@@ -169,7 +197,8 @@ def negative_sampling(pos_samples, num_entity, negative_rate):
     neg_samples[subj, 0] = values[subj]
     neg_samples[obj, 2] = values[obj]
 
-    return np.concatenate((pos_samples, neg_samples)), labels
+    return pos_samples, neg_samples
+
 
 #######################################################################
 #
@@ -183,6 +212,7 @@ def sort_and_rank(score, target):
     indices = indices[:, 1].view(-1)
     return indices
 
+
 def perturb_and_get_rank(embedding, w, a, r, b, test_size, batch_size=100):
     """ Perturb one element in the triplets
     """
@@ -195,15 +225,16 @@ def perturb_and_get_rank(embedding, w, a, r, b, test_size, batch_size=100):
         batch_a = a[batch_start: batch_end]
         batch_r = r[batch_start: batch_end]
         emb_ar = embedding[batch_a] * w[batch_r]
-        emb_ar = emb_ar.transpose(0, 1).unsqueeze(2) # size: D x E x 1
-        emb_c = embedding.transpose(0, 1).unsqueeze(1) # size: D x 1 x V
+        emb_ar = emb_ar.transpose(0, 1).unsqueeze(2)  # size: D x E x 1
+        emb_c = embedding.transpose(0, 1).unsqueeze(1)  # size: D x 1 x V
         # out-prod and reduce sum
-        out_prod = torch.bmm(emb_ar, emb_c) # size D x E x V
-        score = torch.sum(out_prod, dim=0) # size E x V
+        out_prod = torch.bmm(emb_ar, emb_c)  # size D x E x V
+        score = torch.sum(out_prod, dim=0)  # size E x V
         score = torch.sigmoid(score)
         target = b[batch_start: batch_end]
         ranks.append(sort_and_rank(score, target))
     return torch.cat(ranks)
+
 
 # TODO : implement filtered metrics (by filtering out corrupted triplets that are already in knowledge base)
 # return MRR (raw), and Hits @ (1, 3, 10)
@@ -220,7 +251,7 @@ def calc_mrr(embedding, w, test_triplets, hits=[], eval_bz=100):
         ranks_o = perturb_and_get_rank(embedding, w, s, r, o, test_size, eval_bz)
 
         ranks = torch.cat([ranks_s, ranks_o])
-        ranks += 1 # change to 1-indexed
+        ranks += 1  # change to 1-indexed
 
         mrr = torch.mean(1.0 / ranks.float())
         print("MRR (raw): {:.6f}".format(mrr.item()))

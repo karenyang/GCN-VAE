@@ -89,6 +89,8 @@ def main(args):
     best_acc = 0.
     accuracies = []
     f1s = []
+    train_records =  open("train_records.txt", "w")
+    val_records = open("val_records.txt", "w")
     while True:
         model.train()
         epoch += 1
@@ -99,7 +101,7 @@ def main(args):
                 train_data, args.graph_batch_size, args.graph_split_size,
                 num_rels, adj_list, degrees, args.negative_sample,
                 args.edge_sampler)
-        print("Done edge sampling for training")
+        # print("Done edge sampling for training")
 
         # set node/edge feature
         node_id = torch.from_numpy(node_id).view(-1, 1).long()
@@ -116,7 +118,8 @@ def main(args):
         t0 = time.time()
         recon = model(g, node_id, edge_type, edge_norm)
         loss, recon_loss, kl, accu, f1 = model.get_loss(recon, pos_samples, neg_samples)
-
+        train_records.write("{:d};{:.4f};{:.4f};{:.4f}\n".format(epoch,loss,recon_loss,kl))
+        train_records.flush()
         t1 = time.time()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_norm)  # clip gradients
@@ -142,7 +145,7 @@ def main(args):
                     valid_data, args.graph_batch_size, args.graph_split_size,
                     num_rels, val_adj_list, val_degrees, args.negative_sample,
                     args.edge_sampler)
-                print("Done edge sampling for validation")
+                # print("Done edge sampling for validation")
                 val_node_id = torch.from_numpy(val_node_id).view(-1, 1).long()
                 val_edge_type = torch.from_numpy(val_edge_type)
                 val_edge_norm = utils.node_norm_to_edge_norm(val_g, torch.from_numpy(val_node_norm).view(-1, 1))
@@ -154,9 +157,6 @@ def main(args):
 
                 recon = model(val_g, val_node_id, val_edge_type, val_edge_norm)
                 _, _, _, _accu, _f1 = model.get_loss(recon, val_pos_samples, val_neg_samples)
-                print(
-                    "[EVAL{:02d}]| Epoch {:04d} | acc {:.4f} | f1  {:.4f} ".
-                        format(i, epoch,  _accu,  _f1))
                 _accuracy_l.append(_accu)
                 _f1_l.append(_f1)
             accuracies.append(np.mean(_accuracy_l))
@@ -164,6 +164,8 @@ def main(args):
             print(
                 "[EVAL] Epoch {:04d} | acc {:.4f} | f1  {:.4f} ".
                     format(epoch, accuracies[-1], f1s[-1]))
+            val_records.write("{:d};{:.4f};{:.4f}\n".format(epoch,accuracies[-1], f1s[-1]))
+            val_records.flush()
             # save best model
             if accuracies[-1] < best_acc:
                 if epoch >= args.n_epochs:
@@ -176,7 +178,8 @@ def main(args):
     print("training done")
     print("Mean forward time: {:4f}s".format(np.mean(forward_time)))
     print("Mean Backward time: {:4f}s".format(np.mean(backward_time)))
-
+    val_records.close()
+    train_records.close()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='GCN_VAE for Knowledge Graph ')
@@ -192,11 +195,11 @@ if __name__ == '__main__':
                         help="number of weight blocks for each relation")
     parser.add_argument("--n-layers", type=int, default=2,
                         help="number of propagation rounds")
-    parser.add_argument("--n-epochs", type=int, default=5000,
+    parser.add_argument("--n-epochs", type=int, default=20000,
                         help="number of minimum training epochs")
     parser.add_argument("-d", "--dataset", type=str, required=True,
                         help="dataset to use")
-    parser.add_argument("--eval-batch-size", type=int, default=1,
+    parser.add_argument("--eval-batch-size", type=int, default=5,
                         help="batch size when evaluating")
     parser.add_argument("--regularization", type=float, default=0.01,
                         help="regularization weight")
@@ -204,11 +207,11 @@ if __name__ == '__main__':
                         help="norm to clip gradient to")
     parser.add_argument("--graph-batch-size", type=int, default=800,
                         help="number of edges to sample in each iteration")
-    parser.add_argument("--graph-split-size", type=float, default=0.8,
+    parser.add_argument("--graph-split-size", type=float, default=0.5,
                         help="portion of edges used as positive sample")
-    parser.add_argument("--negative-sample", type=int, default=1,
+    parser.add_argument("--negative-sample", type=int, default=3,
                         help="number of negative samples per positive sample")
-    parser.add_argument("--evaluate-every", type=int, default=500,
+    parser.add_argument("--evaluate-every", type=int, default=100,
                         help="perform evaluation every n epochs")
     parser.add_argument("--edge-sampler", type=str, default="neighbor",
                         help="type of edge sampler: 'uniform' or 'neighbor'")

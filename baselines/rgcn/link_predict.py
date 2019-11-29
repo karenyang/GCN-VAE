@@ -227,9 +227,9 @@ if __name__ == '__main__':
             help="dataset to use")
     parser.add_argument("--eval-batch-size", type=int, default=1,
             help="batch size when evaluating")
-    parser.add_argument("--regularization", type=float, default=0.01,
+    parser.add_argument("--regularization", type=float, default=1e-2,
             help="regularization weight")
-    parser.add_argument("--kl-param", type=float, default=1,
+    parser.add_argument("--kl-param", type=float, default=1e-3,
                         help="kl regularization weight")
     parser.add_argument("--grad-norm", type=float, default=1.0,
             help="norm to clip gradient to")
@@ -237,9 +237,9 @@ if __name__ == '__main__':
             help="number of edges to sample in each iteration")
     parser.add_argument("--graph-split-size", type=float, default=0.5,
             help="portion of edges used as positive sample")
-    parser.add_argument("--negative-sample", type=int, default=1,
+    parser.add_argument("--negative-sample", type=int, default=10,
             help="number of negative samples per positive sample")
-    parser.add_argument("--evaluate-every", type=int, default=10,
+    parser.add_argument("--evaluate-every", type=int, default=100,
             help="perform evaluation every n epochs")
     parser.add_argument("--edge-sampler", type=str, default="neighbor",
             help="type of edge sampler: 'uniform' or 'neighbor'")

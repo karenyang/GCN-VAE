@@ -42,8 +42,12 @@ class BaseRGCN(nn.Module):
             self.z_layer = self.build_z_layer()
             # z2R
             self.recon_layer = self.build_reconstruct_layer()
+
+            self.inter_layer = self.build_output_layer(act=nn.ReLU())
+
+            self.recon_layer_2 = self.build_reconstruct_layer()
             # R2o
-            self.output_layer = self.build_output_layer()
+            self.output_layer = self.build_output_layer(bias=True)
 
 
     def get_kl(self):
@@ -61,7 +65,7 @@ class BaseRGCN(nn.Module):
     def build_reconstruct_layer(self):
         raise NotImplementedError
 
-    def build_output_layer(self):
+    def build_output_layer(self, act=None, bias=False):
         raise NotImplementedError
 
     def forward(self, g, h, r, norm):
@@ -76,7 +80,9 @@ class BaseRGCN(nn.Module):
         self.z_mean, self.z_log_std = torch.chunk(h, 2, dim=-1)
         z = normal.Normal(self.z_mean, self.z_log_std.exp()).sample()
         R = self.recon_layer(z)
-        h = self.output_layer(R, z, self.input_embed)
+        h = self.inter_layer(R, z, self.input_embed)
+        R = self.recon_layer_2(h)
+        h = self.output_layer(R, h, self.input_embed)
         return h
 
 class EmbeddingLayer(nn.Module):
@@ -100,11 +106,10 @@ class RGCN(BaseRGCN):
 
 
 class ReconstructLayer(nn.Module):
-    def __init__(self, act=None, normalize=True, non_negative=False, **kwargs):
+    def __init__(self, normalize=True, non_negative=False, **kwargs):
         super(ReconstructLayer, self).__init__()
         self.non_negative = non_negative
         self.normalize = normalize
-        self.act = act
 
     def forward(self, z):
         # import ipdb; ipdb.set_trace()
@@ -112,18 +117,19 @@ class ReconstructLayer(nn.Module):
         if self.non_negative:
             R = R + torch.ones_like(R)
         if self.normalize:
-            d = R.sum(1).pow(-0.5)
-            R = d.unsqueeze(0) * R * d.unsqueeze(1)
-        if self.act is not None:
-            R = self.act(R)
+            R /= R.sum(1)
         return R
 
 
 class UpdateLayer(nn.Module):
-    def __init__(self, input_dim, out_dim, act=None, **kwargs):
+    def __init__(self, input_dim, out_dim, act=None, bias=True, **kwargs):
         super(UpdateLayer, self).__init__()
         self.act = act
         self.linear = nn.Linear(input_dim, out_dim)
+        self.bias = bias
+        if self.bias:
+            self.h_bias = nn.Parameter(torch.Tensor(out_dim))
+            nn.init.zeros_(self.h_bias)
 
     def forward(self, R, z, x=None):
         # import ipdb;
@@ -132,6 +138,8 @@ class UpdateLayer(nn.Module):
         z = R.matmul(z)
         if x is not None:
             z = z + R.matmul(x)
+        if self.bias:
+            z += self.h_bias
         if self.act:
             z = self.act(z)
         return z
@@ -149,11 +157,14 @@ class KGVAE(BaseRGCN):
     def build_z_layer(self):
         return nn.Linear(self.h_dim, 2*self.h_dim)
 
-    def build_reconstruct_layer(self):
-        return ReconstructLayer(act=nn.Sigmoid(), normalize=False, non_negative=True)
+    # def build_1dconv_layer(self, in_C, out_C, kernel_size=1):
+    #     return Conv1d(in_channels=in_C, out_channels=out_C, kernel_size=kernel_size, bias=True)
 
-    def build_output_layer(self):
-        return UpdateLayer(input_dim=self.h_dim,out_dim=self.h_dim, act=nn.Sigmoid())
+    def build_reconstruct_layer(self):
+        return ReconstructLayer(normalize=True, non_negative=True)
+
+    def build_output_layer(self, act=None, bias=False):
+        return UpdateLayer(input_dim=self.h_dim,out_dim=self.h_dim, act=act, bias=True)
 
     def get_kl(self):
         kl = 0.5 / self.z_mean.shape[0] * torch.sum(torch.exp(self.z_log_std) + self.z_mean ** 2 - 1. - self.z_log_std)

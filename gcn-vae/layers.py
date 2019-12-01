@@ -217,12 +217,8 @@ class RelGraphConv(nn.Module):
             g.edata['norm'] = norm
         if self.self_loop:
             loop_message = utils.matmul_maybe_select(x, self.loop_weight)
-        # readout
-        import ipdb;ipdb.set_trace()
-        def reduce_func(nodes):
-            return {'h': torch.cat(nodes.mailbox['m'], dim=0)}
-        # message passing
-        g.update_all(self.message_func, reduce_func)
+
+        g.update_all(self.message_func, fn.sum(msg='msg', out='h'))
         # apply bias and activation
         node_repr = g.ndata['h']
         if self.bias:

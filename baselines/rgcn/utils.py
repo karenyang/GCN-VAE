@@ -182,7 +182,7 @@ def perturb_and_get_rank(embedding, w, a, r, b, test_size, batch_size=100):
     """
     n_batch = (test_size + batch_size - 1) // batch_size
     ranks = []
-    for idx in tqdm(range(n_batch)):
+    for idx in range(n_batch):
         # print("batch {} / {}".format(idx, n_batch))
         batch_start = idx * batch_size
         batch_end = min(test_size, (idx + 1) * batch_size)
@@ -199,7 +199,6 @@ def perturb_and_get_rank(embedding, w, a, r, b, test_size, batch_size=100):
         ranks.append(sort_and_rank(score, target))
     return torch.cat(ranks)
 
-# TODO (lingfan): implement filtered metrics
 # return MRR (raw), and Hits @ (1, 3, 10)
 def calc_mrr(embedding, w, test_triplets, hits=[1,3,10], eval_bz=100):
     with torch.no_grad():

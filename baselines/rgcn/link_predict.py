@@ -29,7 +29,7 @@ import utils
 
 class LinkPredict(nn.Module):
     def __init__(self, model_class, in_dim, h_dim, num_rels, num_bases=-1,
-                 num_hidden_layers=1, dropout=0, use_cuda=False, reg_param=0, kl_param=1):
+                 num_hidden_layers=1, dropout=0, use_cuda=True, reg_param=0, kl_param=1):
         super(LinkPredict, self).__init__()
         self.rgcn = model_class(in_dim, h_dim, h_dim, num_rels * 2, num_bases,
                          num_hidden_layers, dropout, use_cuda, vae=model_class==KGVAE)
@@ -60,8 +60,8 @@ class LinkPredict(nn.Module):
         predict_loss = F.binary_cross_entropy_with_logits(score, labels)
         reg_loss = self.regularization_loss(embed)
         kl = self.rgcn.get_kl()
-        print("pred ", predict_loss.item(), " reg ", self.reg_param * reg_loss.item(), ' kl ',self.kl_param * kl.item())
-        return predict_loss + self.reg_param * reg_loss + self.kl_param * kl, predict_loss, kl
+        loss = (predict_loss + self.reg_param * reg_loss + self.kl_param * kl).cuda()
+        return loss, predict_loss, kl
 
 def node_norm_to_edge_norm(g, node_norm):
     g = g.local_var()
@@ -85,14 +85,14 @@ def main(args):
         torch.cuda.set_device(args.gpu)
 
     # create model
-    model = LinkPredict(model_class=KGVAE, #RGCN
+    model = LinkPredict(model_class=RGCN,#KGVAE, #RGCN
                         in_dim=num_nodes,
                         h_dim=args.n_hidden,
                         num_rels=num_rels,
                         num_bases=args.n_bases,
                         num_hidden_layers=args.n_layers,
                         dropout=args.dropout,
-                        use_cuda=use_cuda,
+                        use_cuda=True,
                         reg_param=args.regularization,
                         kl_param=args.kl_param,
                         )
@@ -159,8 +159,9 @@ def main(args):
         t2 = time.time()
         forward_time.append(t1 - t0)
         backward_time.append(t2 - t1)
-        print("Epoch {:04d} | Loss {:.4f} | Best MRR {:.4f} ".
-              format(epoch, loss.item(), best_mrr))
+
+        print("Epoch {:04d} | Loss {:.4f} |  Best MRR {:.4f} | pred {:.4f} | reg {:.4f} | kl {:.4f} ".
+              format(epoch, loss.item(), best_mrr, pred_loss, loss-pred_loss-kl, kl))
         optimizer.zero_grad()
 
         # validation
@@ -225,7 +226,7 @@ if __name__ == '__main__':
             help="number of minimum training epochs")
     parser.add_argument("-d", "--dataset", type=str, required=True,
             help="dataset to use")
-    parser.add_argument("--eval-batch-size", type=int, default=1,
+    parser.add_argument("--eval-batch-size", type=int, default=100,
             help="batch size when evaluating")
     parser.add_argument("--regularization", type=float, default=1e-2,
             help="regularization weight")

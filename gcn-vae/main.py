@@ -87,6 +87,7 @@ def main(args):
 
     epoch = 0
     best_acc = 0.
+    accus = []
     mrs= []
     mrrs=[]
     hit1s=[]
@@ -97,30 +98,33 @@ def main(args):
     while True:
         model.train()
         epoch += 1
-
         # perform edge neighborhood sampling to generate training graph and data
         g, node_id, edge_type, node_norm, pos_samples, neg_samples = \
-            utils.generate_sampled_graph_and_labels(
+            utils.generate_nsampled_graph_and_labels(
                 train_data, args.graph_batch_size, args.graph_split_size,
                 num_rels, adj_list, degrees, args.negative_sample,
                 args.edge_sampler)
-        # print("Done edge sampling for training")
-
         # set node/edge feature
         node_id = torch.from_numpy(node_id).view(-1, 1).long()
         edge_type = torch.from_numpy(edge_type)
         edge_norm = utils.node_norm_to_edge_norm(g, torch.from_numpy(node_norm).view(-1, 1))
         pos_samples, neg_samples = torch.from_numpy(pos_samples), torch.from_numpy(neg_samples)
         deg = g.in_degrees(range(g.number_of_nodes())).float().view(-1, 1)
-
         if use_cuda:
             node_id, deg = node_id.cuda(), deg.cuda()
             edge_type, edge_norm = edge_type.cuda(), edge_norm.cuda()
             pos_samples, neg_samples = pos_samples.cuda(), neg_samples.cuda()
 
         t0 = time.time()
-        recon = model(g, node_id, edge_type, edge_norm)
-        loss, recon_loss, kl, accu, mr, mrr, hit1, hit3 ,hit10 = model.get_loss(recon, pos_samples, neg_samples)
+        cond_relation = zip(pos_samples[:, 0], pos_samples[ :,1])
+        # import ipdb;ipdb.set_trace()
+
+        labels = pos_samples[:,2]
+        neg_labels = neg_samples
+
+        recon = model(g, node_id, edge_type, edge_norm, cond_relation)
+        loss, recon_loss, kl = model.get_loss(recon, pos_samples, neg_samples)
+        # model.get_metrics(recon, pos_samples)
         train_records.write("{:d};{:.4f};{:.4f};{:.4f}\n".format(epoch,loss,recon_loss,kl))
         train_records.flush()
         t1 = time.time()
@@ -131,8 +135,8 @@ def main(args):
         forward_time.append(t1 - t0)
         backward_time.append(t2 - t1)
         print(
-            "Epoch {:04d} | Loss {:.4f} | Recon loss {:.4f} | KL {:.4f} | mr {:.4f} | mrr {:.4f} | hit1 {:.4f} | hit3 {:.4f} | hit10 {:.4f} ".
-                format(epoch, loss.item(), recon_loss.item(), kl.item(), mr, mrr, hit1,hit3,hit10))
+            "Epoch {:04d} | Loss {:.4f} | Recon loss {:.4f} | KL {:.4f} ".
+                format(epoch, loss.item(), recon_loss.item(), kl.item()))
 
         optimizer.zero_grad()
 
@@ -145,47 +149,46 @@ def main(args):
             _hit1_l = []
             _hit3_l = []
             _hit10_l = []
-            for i in range(args.eval_batch_size):
-                val_g, val_node_id, val_edge_type, val_node_norm, val_pos_samples, val_neg_samples = utils.generate_sampled_graph_and_labels(
-                    valid_data, args.graph_batch_size, args.graph_split_size,
-                    num_rels, val_adj_list, val_degrees, args.negative_sample,
-                    args.edge_sampler)
-                # print("Done edge sampling for validation")
-                val_node_id = torch.from_numpy(val_node_id).view(-1, 1).long()
-                val_edge_type = torch.from_numpy(val_edge_type)
-                val_edge_norm = utils.node_norm_to_edge_norm(val_g, torch.from_numpy(val_node_norm).view(-1, 1))
-                val_pos_samples, val_neg_samples = torch.from_numpy(val_pos_samples), torch.from_numpy(val_neg_samples)
-                if use_cuda:
-                    val_node_id = val_node_id.cuda()
-                    val_edge_type, val_edge_norm = val_edge_type.cuda(), val_edge_norm.cuda()
-                    val_pos_samples, val_neg_samples = val_pos_samples.cuda(), val_neg_samples.cuda()
+            val_g, val_node_id, val_edge_type, val_node_norm, val_pos_samples, val_neg_samples = utils.generate_sampled_graph_and_labels(
+                valid_data, args.graph_batch_size, args.graph_split_size,
+                num_rels, val_adj_list, val_degrees, args.negative_sample,
+                args.edge_sampler)
+            # print("Done edge sampling for validation")
+            val_node_id = torch.from_numpy(val_node_id).view(-1, 1).long()
+            val_edge_type = torch.from_numpy(val_edge_type)
+            val_edge_norm = utils.node_norm_to_edge_norm(val_g, torch.from_numpy(val_node_norm).view(-1, 1))
+            val_pos_samples, val_neg_samples = torch.from_numpy(val_pos_samples), torch.from_numpy(val_neg_samples)
+            if use_cuda:
+                val_node_id = val_node_id.cuda()
+                val_edge_type, val_edge_norm = val_edge_type.cuda(), val_edge_norm.cuda()
+                val_pos_samples, val_neg_samples = val_pos_samples.cuda(), val_neg_samples.cuda()
 
-                recon = model(val_g, val_node_id, val_edge_type, val_edge_norm)
-                loss, recon_loss, kl, accu, mr, mrr, hit1, hit3 ,hit10 = model.get_loss(recon, val_pos_samples, val_neg_samples)
-                _mr_l.append(mr)
-                _mrr_l.append(mrr)
-                _hit1_l.append(hit1)
-                _hit3_l.append(hit3)
-                _hit10_l.append(hit10)
-            mrs.append(np.mean(_mr_l))
-            mrrs.append(np.mean(_mrr_l))
-            hit1s.append(np.mean(_hit1_l))
-            hit3s.append(np.mean(_hit3_l))
-            hit10s.append(np.mean(_hit10_l))
+            val_cond_relation = zip(val_pos_samples[:, 0], val_pos_samples[:,1])
+            recon = model(val_g, val_node_id, val_edge_type, val_edge_norm, val_cond_relation)
+            # val_labels = torch.LongTensor(val_pos_samples[:, 2])
+            # if use_cuda:
+            #     val_labels = val_labels.cuda()
+            accu, mr, mrr, hit1, hit3 ,hit10 = model.get_metrics(recon, val_pos_samples)
+            accus.append(accu)
+            mrs.append(mr)
+            mrrs.append(mrr)
+            hit1s.append(hit1)
+            hit3s.append(hit3)
+            hit10s.append(hit10)
 
             print(
-                "[EVAL]Epoch {:04d} | mr {:.4f} | mrr {:.4f} | hit1 {:.4f} | hit3 {:.4f} | hit10 {:.4f}".
-                    format(epoch, mrs[-1], mrrs[-1], hit1s[-1], hit3s[-1], hit10s[-1]))
+                "[EVAL]Epoch {:04d} | mr {:.4f} | mrr {:.4f} | hit1 {:.4f} | hit3 {:.4f} | hit10 {:.4f}| | accu {:.4f} |".
+                    format(epoch, mrs[-1], mrrs[-1], hit1s[-1], hit3s[-1], hit10s[-1], accus[-1]))
 
-            val_records.write("{:d};{:.4f};{:.4f};{:.4f};{:.4f};{:.4f}\n".format(epoch, mrs[-1], mrrs[-1], hit1s[-1], hit3s[-1], hit10s[-1]))
+            val_records.write("{:d};{:.4f};{:.4f};{:.4f};{:.4f};{:.4f};{:.4f}\n".format(epoch, mrs[-1], mrrs[-1], hit1s[-1], hit3s[-1], hit10s[-1], accus[-1]))
             val_records.flush()
             # save best model
-            if hit10s[-1] < best_acc:
+            if accu.item() < best_acc:
                 if epoch >= args.n_epochs:
                     break
             else:
-                best_acc = hit10s[-1]
-                print("Best hit10", hit10s)
+                best_acc = accu.item()
+                print("Best accu", best_acc)
             torch.save({'state_dict': model.state_dict(), 'epoch': epoch},
                        'model_state.pth')
 
@@ -199,7 +202,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='GCN_VAE for Knowledge Graph ')
     parser.add_argument("--dropout", type=float, default=0.2,
                         help="dropout probability")
-    parser.add_argument("--n-hidden", type=int, default=400,
+    parser.add_argument("--n-hidden", type=int, default=500,
                         help="number of hidden units")
     parser.add_argument("--gpu", type=int, default=-1,
                         help="gpu")
@@ -213,19 +216,19 @@ if __name__ == '__main__':
                         help="number of minimum training epochs")
     parser.add_argument("-d", "--dataset", type=str, required=True,
                         help="dataset to use")
-    parser.add_argument("--eval-batch-size", type=int, default=1,
+    parser.add_argument("--eval-batch-size", type=int, default=1000,
                         help="batch size when evaluating")
     parser.add_argument("--regularization", type=float, default=0.01,
                         help="regularization weight")
     parser.add_argument("--grad-norm", type=float, default=1.0,
                         help="norm to clip gradient to")
-    parser.add_argument("--graph-batch-size", type=int, default=700,
+    parser.add_argument("--graph-batch-size", type=int, default=1024,
                         help="number of edges to sample in each iteration")
-    parser.add_argument("--graph-split-size", type=float, default=0.5,
+    parser.add_argument("--graph-split-size", type=float, default=1,
                         help="portion of edges used as positive sample")
-    parser.add_argument("--negative-sample", type=int, default=10,
+    parser.add_argument("--negative-sample", type=int, default=1,
                         help="number of negative samples per positive sample")
-    parser.add_argument("--evaluate-every", type=int, default=500,
+    parser.add_argument("--evaluate-every", type=int, default=100,
                         help="perform evaluation every n epochs")
     parser.add_argument("--edge-sampler", type=str, default="uniform",
                         help="type of edge sampler: 'uniform' or 'neighbor'")

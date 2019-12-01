@@ -9,7 +9,7 @@ from torch.distributions import normal
 class BaseRGCN(nn.Module):
     def __init__(self, num_nodes, h_dim, out_dim, num_rels, num_bases,
                  num_hidden_layers=1, dropout=0,
-                 use_self_loop=False, use_cuda=False,
+                 use_self_loop=False, use_cuda=True,
                  vae=False):
         super(BaseRGCN, self).__init__()
         self.num_nodes = num_nodes
@@ -43,12 +43,7 @@ class BaseRGCN(nn.Module):
             # z2R
             self.recon_layer = self.build_reconstruct_layer()
 
-            self.inter_layer = self.build_output_layer(act=nn.ReLU())
-
-            self.recon_layer_2 = self.build_reconstruct_layer()
-            # R2o
-            self.output_layer = self.build_output_layer(bias=True)
-
+            self.inter_layer = self.build_output_layer()
 
     def get_kl(self):
         return torch.Tensor([0]).cuda()
@@ -143,6 +138,33 @@ class UpdateLayer(nn.Module):
         if self.act:
             z = self.act(z)
         return z
+
+
+class RGCN_DistMult(BaseRGCN):
+    def build_input_layer(self):
+        return EmbeddingLayer(self.num_nodes, self.h_dim)
+
+    def build_hidden_layer(self, idx):
+        act = F.relu if idx < self.num_hidden_layers - 1 else None
+        return RelGraphConv(self.h_dim, self.h_dim, self.num_rels, "bdd",
+                            self.num_bases, activation=act, self_loop=True,
+                            dropout=self.dropout)
+
+    def build_z_layer(self):
+        return nn.Linear(self.h_dim, 2*self.h_dim)
+
+    # def build_1dconv_layer(self, in_C, out_C, kernel_size=1):
+    #     return Conv1d(in_channels=in_C, out_channels=out_C, kernel_size=kernel_size, bias=True)
+
+    def build_reconstruct_layer(self):
+        return ReconstructLayer(normalize=False, non_negative=False)
+
+    def build_output_layer(self, act=None, bias=False):
+        return UpdateLayer(input_dim=self.h_dim,out_dim=self.h_dim, act=act, bias=True)
+
+    def get_kl(self):
+        kl = 0.5 / self.z_mean.shape[0] * torch.sum(torch.exp(self.z_log_std) + self.z_mean ** 2 - 1. - self.z_log_std)
+        return kl
 
 class KGVAE(BaseRGCN):
     def build_input_layer(self):

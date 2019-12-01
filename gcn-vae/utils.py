@@ -163,7 +163,6 @@ def _build_graph_from_triplets(num_nodes, num_rels, triplets):
 
 def build_graph(num_nodes, num_rels, edges):
     src, rel, dst = np.array(edges).transpose()
-    print("Val graph:")
     return _build_graph_from_triplets(num_nodes, num_rels, (src, rel, dst))
 
 def kl_normal(qm, qv, pm, pv):
@@ -185,18 +184,20 @@ def kl_normal(qm, qv, pm, pv):
     return kl
 
 def negative_sampling(pos_samples, num_entity, negative_rate):
+    """
+    Only swap out tail entities
+    """
     size_of_batch = len(pos_samples)
     num_to_generate = size_of_batch * negative_rate
     neg_samples = np.tile(pos_samples, (negative_rate, 1))
     labels = np.zeros(size_of_batch * (negative_rate + 1), dtype=np.float32)
     labels[: size_of_batch] = 1
     values = np.random.randint(num_entity, size=num_to_generate)
-    choices = np.random.uniform(size=num_to_generate)
-    subj = choices > 0.5
-    obj = choices <= 0.5
-    neg_samples[subj, 0] = values[subj]
-    neg_samples[obj, 2] = values[obj]
-
+    neg_samples[:, 2] = values
+    # for filtered metrics, remove the true triplets from the negative samples
+    for i in range(len(neg_samples)):
+        if neg_samples[i] in pos_samples:
+            neg_samples[i,2] =  neg_samples[i-1,2]
     return pos_samples, neg_samples
 
 
@@ -219,7 +220,7 @@ def perturb_and_get_rank(embedding, w, a, r, b, test_size, batch_size=100):
     n_batch = (test_size + batch_size - 1) // batch_size
     ranks = []
     for idx in range(n_batch):
-        print("batch {} / {}".format(idx, n_batch))
+        # print("batch {} / {}".format(idx, n_batch))
         batch_start = idx * batch_size
         batch_end = min(test_size, (idx + 1) * batch_size)
         batch_a = a[batch_start: batch_end]
@@ -260,3 +261,105 @@ def calc_mrr(embedding, w, test_triplets, hits=[], eval_bz=100):
             avg_count = torch.mean((ranks <= hit).float())
             print("Hits (raw) @ {}: {:.6f}".format(hit, avg_count.item()))
     return mrr.item()
+
+#######################################################################
+#
+# Probability utils
+#
+#######################################################################
+
+def gaussian_parameters(h, dim=-1):
+    """
+    Converts generic real-valued representations into mean and variance
+    parameters of a Gaussian distribution
+
+    Args:
+        h: tensor: (batch, ..., dim, ...): Arbitrary tensor
+        dim: int: (): Dimension along which to split the tensor for mean and
+            variance
+
+    Returns:
+        m: tensor: (batch, ..., dim / 2, ...): Mean
+        v: tensor: (batch, ..., dim / 2, ...): Variance
+    """
+    m, h = torch.split(h, h.size(dim) // 2, dim=dim)
+    v = F.softplus(h) + 1e-8
+    return m, v
+
+def sample_gaussian(m, v):
+    """
+    Element-wise application reparameterization trick to sample from Gaussian
+
+    Args:
+        m: tensor: (batch, ...): Mean
+        v: tensor: (batch, ...): Variance
+
+    Return:
+        z: tensor: (batch, ...): Samples
+    """
+    sqrt_v = torch.sqrt(v)
+    sample = m + torch.randn_like(sqrt_v) * sqrt_v
+    return sample
+
+def log_normal_mixture(z, m, v):
+    """
+    Computes log probability of a uniformly-weighted Gaussian mixture.
+
+    Args:
+        z: tensor: (batch, dim): Observations
+        m: tensor: (batch, mix, dim): Mixture means
+        v: tensor: (batch, mix, dim): Mixture variances
+
+    Return:
+        log_prob: tensor: (batch,): log probability of each sample
+    """
+    log_prob = log_normal(z.unsqueeze(1), m, v)
+    log_prob = log_mean_exp(log_prob, dim=-1)
+    return log_prob
+
+def log_normal(x, m, v):
+    """
+    Computes the elem-wise log probability of a Gaussian and then sum over the
+    last dim. Basically we're assuming all dims are batch dims except for the
+    last dim.
+
+    Args:
+        x: tensor: (batch_1, batch_2, ..., batch_k, dim): Observation
+        m: tensor: (batch_1, batch_2, ..., batch_k, dim): Mean
+        v: tensor: (batch_1, batch_2, ..., batch_k, dim): Variance
+
+    Return:
+        log_prob: tensor: (batch_1, batch_2, ..., batch_k): log probability of
+            each sample. Note that the summation dimension is not kept
+    """
+    log_prob = -(x - m).pow(2) / (2 * v) - v.sqrt().log() - np.log(np.sqrt((2 * np.pi)))
+    log_prob = torch.sum(log_prob, dim=-1)
+    return log_prob
+
+def log_sum_exp(x, dim=0):
+    """
+    Compute the log(sum(exp(x), dim)) in a numerically stable manner
+
+    Args:
+        x: tensor: (...): Arbitrary tensor
+        dim: int: (): Dimension along which sum is computed
+
+    Return:
+        _: tensor: (...): log(sum(exp(x), dim))
+    """
+    max_x = torch.max(x, dim)[0]
+    new_x = x - max_x.unsqueeze(dim).expand_as(x)
+    return max_x + (new_x.exp().sum(dim)).log()
+
+def log_mean_exp(x, dim):
+    """
+    Compute the log(mean(exp(x), dim)) in a numerically stable manner
+
+    Args:
+        x: tensor: (...): Arbitrary tensor
+        dim: int: (): Dimension along which mean is computed
+
+    Return:
+        _: tensor: (...): log(mean(exp(x), dim))
+    """
+    return log_sum_exp(x, dim) - np.log(x.size(dim))

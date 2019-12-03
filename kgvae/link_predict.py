@@ -146,13 +146,19 @@ def main(args):
         print("Using best epoch: {}".format(checkpoint['epoch']))
         embed = model(test_graph, test_node_id, test_rel, test_norm)
         utils.calc_mrr(embed, model.w_relation, test_data,
-                       hits=[1, 3, 10], eval_bz=args.eval_batch_size)
+                       hits=[1, 3, 10], eval_bz=args.eval_batch_size, all_batches=True)
         exit(0)
     # training loop
     print("start training...")
 
     epoch = 0
     best_mrr = 0
+    if args.load is True:
+        print(f"Loading checkpoint file {args.model_state_file} for training")
+        checkpoint = torch.load(args.model_state_file)
+        model.load_state_dict(checkpoint['state_dict'])
+        epoch = checkpoint['epoch']
+
     while True:
         model.train()
         epoch += 1
@@ -201,7 +207,7 @@ def main(args):
             embed = model(val_graph, val_node_id, val_rel, val_norm)
 
             mrr = utils.calc_mrr(embed, model.w_relation, valid_data,
-                                 hits=[1, 3, 10], eval_bz=args.eval_batch_size)
+                                 hits=[1, 3, 10], eval_bz=args.eval_batch_size, all_batches=False)
             # save best model
             if mrr < best_mrr:
                 torch.save({'state_dict': model.state_dict(), 'epoch': epoch},
@@ -236,7 +242,7 @@ if __name__ == '__main__':
             help="number of weight blocks for each relation")
     parser.add_argument("--n-layers", type=int, default=2,
             help="number of propagation rounds")
-    parser.add_argument("--n-epochs", type=int, default=10000,
+    parser.add_argument("--n-epochs", type=int, default=50000,
             help="number of minimum training epochs")
     parser.add_argument("-d", "--dataset", type=str, required=True,
             help="dataset to use")
@@ -264,7 +270,8 @@ if __name__ == '__main__':
                         help="model state file to load or save")
     parser.add_argument("--model-class", type=str, default='KGVAE',
                         help="model class")
-
+    parser.add_argument("--load", type=bool, default=False,
+                        help="whether to load a model state file for training")
 
     args = parser.parse_args()
     print(args)

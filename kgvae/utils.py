@@ -172,11 +172,13 @@ def sort_and_rank(score, target):
     return indices
 
 
-def perturb_and_get_rank(embedding, w, a, r, b, test_size, batch_size=100):
+def perturb_and_get_rank(embedding, w, a, r, b, test_size, batch_size=100, all_batches=True):
     """ Perturb one element in the triplets
     """
     n_batch = (test_size + batch_size - 1) // batch_size
     ranks = []
+    if all_batches is False:
+        n_batch = 1
     for idx in range(n_batch): #n_batch TODO
         batch_start = idx * batch_size
         batch_end = min(test_size, (idx + 1) * batch_size)
@@ -204,7 +206,7 @@ def perturb_and_get_rank(embedding, w, a, r, b, test_size, batch_size=100):
     return torch.cat(ranks)
 
 # return MRR (raw), and Hits @ (1, 3, 10)
-def calc_mrr(embedding, w, test_triplets, hits=[], eval_bz=100):
+def calc_mrr(embedding, w, test_triplets, hits=[], eval_bz=100, all_batches=True):
     with torch.no_grad():
         s = test_triplets[:, 0]
         r = test_triplets[:, 1]
@@ -212,9 +214,9 @@ def calc_mrr(embedding, w, test_triplets, hits=[], eval_bz=100):
         test_size = test_triplets.shape[0]
 
         # perturb subject
-        ranks_s = perturb_and_get_rank(embedding, w, o, r, s, test_size, eval_bz)
+        ranks_s = perturb_and_get_rank(embedding, w, o, r, s, test_size, eval_bz, all_batches)
         # perturb object
-        ranks_o = perturb_and_get_rank(embedding, w, s, r, o, test_size, eval_bz)
+        ranks_o = perturb_and_get_rank(embedding, w, s, r, o, test_size, eval_bz, all_batches)
 
         ranks = torch.cat([ranks_s, ranks_o])
         ranks += 1 # change to 1-indexed

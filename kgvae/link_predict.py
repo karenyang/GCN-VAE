@@ -22,35 +22,9 @@ import random
 from dgl.contrib.data import load_data
 from dgl.nn.pytorch import RelGraphConv
 from torch.distributions import normal
-from model import BaseRGCN, KGVAE
+from model import RGCN, KGVAE
 
 import utils
-
-class EmbeddingLayer(nn.Module):
-    def __init__(self, num_nodes, h_dim):
-        super(EmbeddingLayer, self).__init__()
-        self.embedding = nn.Embedding(num_nodes, h_dim)
-
-    def forward(self, g, h, r, norm):
-        return self.embedding(h.squeeze())
-
-class DistLayer(nn.Module):
-    def __init__(self, in_dim, out_dim):
-        super(DistLayer, self).__init__()
-        self.linear = nn.Linear(in_dim, out_dim)
-
-    def forward(self, g, h, r, norm):
-        return self.linear(h.squeeze())
-
-class RGCN(BaseRGCN):
-    def build_input_layer(self):
-        return EmbeddingLayer(self.num_nodes, self.h_dim)
-
-    def build_hidden_layer(self, idx):
-        act = F.relu if idx < self.num_hidden_layers - 1 else None
-        return RelGraphConv(self.h_dim, self.h_dim, self.num_rels, "bdd",
-                self.num_bases, activation=act, self_loop=True,
-                dropout=self.dropout)
 
 
 class LinkPredict(nn.Module):
@@ -110,7 +84,12 @@ def main(args):
         torch.cuda.set_device(args.gpu)
 
     # create model
-    model = LinkPredict(model_class=KGVAE,
+    if args.model_class == "KGVAE":
+        model_class = KGVAE
+    else:
+        model_class = RGCN
+
+    model = LinkPredict(model_class=model_class,
                         in_dim=num_nodes,
                         h_dim=args.n_hidden,
                         num_rels=num_rels,
@@ -124,16 +103,15 @@ def main(args):
 
     # validation and testing triplets
     valid_data = torch.LongTensor(valid_data)
-    test_data = torch.LongTensor(test_data)
 
     # build test graph
-    test_graph, test_rel, test_norm = utils.build_test_graph(
+    val_graph, val_rel, val_norm = utils.build_test_graph(
         num_nodes, num_rels, valid_data)
-    test_deg = test_graph.in_degrees(
-                range(test_graph.number_of_nodes())).float().view(-1,1)
-    test_node_id = torch.arange(0, num_nodes, dtype=torch.long).view(-1, 1)
-    test_rel = torch.from_numpy(test_rel)
-    test_norm = node_norm_to_edge_norm(test_graph, torch.from_numpy(test_norm).view(-1, 1))
+    # val_deg = val_graph.in_degrees(
+    #     range(val_graph.number_of_nodes())).float().view(-1, 1)
+    val_node_id = torch.arange(0, num_nodes, dtype=torch.long).view(-1, 1)
+    val_rel = torch.from_numpy(val_rel)
+    val_norm = node_norm_to_edge_norm(val_graph, torch.from_numpy(val_norm).view(-1, 1))
 
     if use_cuda:
         model.cuda()
@@ -143,11 +121,33 @@ def main(args):
 
     # optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-
-    model_state_file = 'model_state.pth'
     forward_time = []
     backward_time = []
 
+    if args.test_mode is True:
+        print("\nstart testing:")
+
+        # use best model checkpoint
+        checkpoint = torch.load(args.model_state_file)
+        test_data = torch.LongTensor(test_data)
+
+        # build test graph
+        test_graph, test_rel, test_norm = utils.build_test_graph(
+            num_nodes, num_rels, test_data)
+        # test_deg = test_graph.in_degrees(
+        #     range(test_graph.number_of_nodes())).float().view(-1, 1)
+        test_node_id = torch.arange(0, num_nodes, dtype=torch.long).view(-1, 1)
+        test_rel = torch.from_numpy(test_rel)
+        test_norm = node_norm_to_edge_norm(test_graph, torch.from_numpy(test_norm).view(-1, 1))
+        if use_cuda:
+            model.cpu()  # test on CPU
+        model.eval()
+        model.load_state_dict(checkpoint['state_dict'])
+        print("Using best epoch: {}".format(checkpoint['epoch']))
+        embed = model(test_graph, test_node_id, test_rel, test_norm)
+        utils.calc_mrr(embed, model.w_relation, test_data,
+                       hits=[1, 3, 10], eval_bz=args.eval_batch_size)
+        exit(0)
     # training loop
     print("start training...")
 
@@ -186,7 +186,7 @@ def main(args):
 
         forward_time.append(t1 - t0)
         backward_time.append(t2 - t1)
-        print("Epoch {:04d} | Loss {:.4f} | Best MRR {:.4f} | pred_loss {:.4f}s | kl {:.4f}s".
+        print("Epoch {:04d} | Loss {:.4f} | Best MRR {:.4f} | pred_loss {:.4f} | kl {:.4f}".
               format(epoch, loss.item(), best_mrr, pred_loss.item(), kl.item()))
 
         optimizer.zero_grad()
@@ -198,35 +198,29 @@ def main(args):
                 model.cpu()
             model.eval()
             print("start eval")
-            embed = model(test_graph, test_node_id, test_rel, test_norm)
+            embed = model(val_graph, val_node_id, val_rel, val_norm)
+
             mrr = utils.calc_mrr(embed, model.w_relation, valid_data,
                                  hits=[1, 3, 10], eval_bz=args.eval_batch_size)
             # save best model
             if mrr < best_mrr:
-                if epoch >= args.n_epochs:
-                    break
+                torch.save({'state_dict': model.state_dict(), 'epoch': epoch},
+                            args.model_state_file+"_latest")
             else:
                 best_mrr = mrr
                 torch.save({'state_dict': model.state_dict(), 'epoch': epoch},
-                           model_state_file)
+                           args.model_state_file)
             if use_cuda:
                 model.cuda()
+
+        if epoch >= args.n_epochs:
+            break
 
     print("training done")
     print("Mean forward time: {:4f}s".format(np.mean(forward_time)))
     print("Mean Backward time: {:4f}s".format(np.mean(backward_time)))
 
-    print("\nstart testing:")
-    # use best model checkpoint
-    checkpoint = torch.load(model_state_file)
-    if use_cuda:
-        model.cpu() # test on CPU
-    model.eval()
-    model.load_state_dict(checkpoint['state_dict'])
-    print("Using best epoch: {}".format(checkpoint['epoch']))
-    embed = model(test_graph, test_node_id, test_rel, test_norm)
-    utils.calc_mrr(embed, model.w_relation, test_data,
-                   hits=[1, 3, 10], eval_bz=args.eval_batch_size)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Link Prediction')
@@ -242,11 +236,11 @@ if __name__ == '__main__':
             help="number of weight blocks for each relation")
     parser.add_argument("--n-layers", type=int, default=2,
             help="number of propagation rounds")
-    parser.add_argument("--n-epochs", type=int, default=5000,
+    parser.add_argument("--n-epochs", type=int, default=10000,
             help="number of minimum training epochs")
     parser.add_argument("-d", "--dataset", type=str, required=True,
             help="dataset to use")
-    parser.add_argument("--eval-batch-size", type=int, default=500,
+    parser.add_argument("--eval-batch-size", type=int, default=400,
             help="batch size when evaluating")
     parser.add_argument("--regularization", type=float, default=0.01,
             help="regularization weight")
@@ -256,14 +250,21 @@ if __name__ == '__main__':
             help="norm to clip gradient to")
     parser.add_argument("--graph-batch-size", type=int, default=20000,
             help="number of edges to sample in each iteration")
-    parser.add_argument("--graph-split-size", type=float, default=1.0,
+    parser.add_argument("--graph-split-size", type=float, default=0.5,
             help="portion of edges used as positive sample")
     parser.add_argument("--negative-sample", type=int, default=10,
             help="number of negative samples per positive sample")
-    parser.add_argument("--evaluate-every", type=int, default=50,
+    parser.add_argument("--evaluate-every", type=int, default=5000,
             help="perform evaluation every n epochs")
     parser.add_argument("--edge-sampler", type=str, default="uniform",
             help="type of edge sampler: 'uniform' or 'neighbor'")
+    parser.add_argument("--test-mode", type=bool, default=False,
+                        help="only evaluate on test dataset")
+    parser.add_argument("--model-state-file", type=str, default='model_state.pth',
+                        help="model state file to load or save")
+    parser.add_argument("--model-class", type=str, default='KGVAE',
+                        help="model class")
+
 
     args = parser.parse_args()
     print(args)

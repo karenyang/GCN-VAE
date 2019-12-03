@@ -177,8 +177,7 @@ def perturb_and_get_rank(embedding, w, a, r, b, test_size, batch_size=100):
     """
     n_batch = (test_size + batch_size - 1) // batch_size
     ranks = []
-    for idx in range(1): #n_batch TODO
-        print("batch {} / {}".format(idx, n_batch))
+    for idx in range(n_batch): #n_batch TODO
         batch_start = idx * batch_size
         batch_end = min(test_size, (idx + 1) * batch_size)
         batch_a = a[batch_start: batch_end]
@@ -192,6 +191,16 @@ def perturb_and_get_rank(embedding, w, a, r, b, test_size, batch_size=100):
         score = torch.sigmoid(score)
         target = b[batch_start: batch_end]
         ranks.append(sort_and_rank(score, target))
+
+        _running_ranks = 1.0+torch.cat((ranks)).float()
+        mrr = torch.mean(1.0 / _running_ranks)
+        mr = torch.mean(_running_ranks)
+        avg_count = []
+        for hit in [1,5,10]:
+            avg_count.append( torch.mean((_running_ranks <= hit).float()).item())
+        print("batch {} / {}: MR : {:.6f} |  MRR : {:.6f} | Hit1: {:.6f} | Hit5: {:.6f} | Hit10: {:.6f}".format(
+            idx, n_batch, mr.item(), mrr.item(), avg_count[0], avg_count[1], avg_count[2] ) )
+
     return torch.cat(ranks)
 
 # return MRR (raw), and Hits @ (1, 3, 10)

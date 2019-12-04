@@ -29,22 +29,54 @@ import utils
 
 class LinkPredict(nn.Module):
     def __init__(self, model_class, in_dim, h_dim, num_rels, num_bases=-1,
-                 num_hidden_layers=1, dropout=0, use_cuda=False, reg_param=0, kl_param=0, k=1):
+                 num_hidden_layers=1, dropout=0, use_cuda=False, reg_param=0, kl_param=0, k=1, decoder_method="RotateE",
+                 gamma=12, epsilon=2):
         super(LinkPredict, self).__init__()
-        self.model = model_class(in_dim, h_dim, h_dim, num_rels * 2, num_bases,
-                         num_hidden_layers, dropout, use_cuda)
+        self.decoder_method = decoder_method
         self.reg_param = reg_param
         self.kl_param = kl_param
         self.w_relation = nn.Parameter(torch.Tensor(num_rels, h_dim))
-        nn.init.xavier_uniform_(self.w_relation,
-                                gain=nn.init.calculate_gain('relu'))
+        self.gamma, self.epsilon = gamma, epsilon
+        self.h_dim = h_dim
+        if self.decoder_method in ["RotateE"]:
+            nn.init.uniform_(
+                tensor=self.w_relation,
+                a=-(gamma + epsilon) / h_dim ,
+                b=(gamma + epsilon) / h_dim ,
+            )
+        else:
+            nn.init.xavier_uniform_(self.w_relation,
+                                    gain=nn.init.calculate_gain('relu'))
+
+        if self.decoder_method == "RotateE":
+            ent_h_dim = 2 * h_dim
+        else:
+            ent_h_dim = h_dim
+        self.model = model_class(in_dim, ent_h_dim, ent_h_dim, num_rels * 2, num_bases,
+                                 num_hidden_layers, dropout, use_cuda, gamma, epsilon)
 
     def calc_score(self, embedding, triplets):
-        # DistMult
-        s = embedding[triplets[:,0]]
-        r = self.w_relation[triplets[:,1]]
-        o = embedding[triplets[:,2]]
-        score = torch.sum(s * r * o, dim=1)
+        heads = embedding[triplets[:, 0]]
+        relations = self.w_relation[triplets[:, 1]]
+        tails = embedding[triplets[:, 2]]
+        if self.decoder_method == 'DistMult':
+            score = torch.sum(heads * relations * tails, dim=1)
+        elif self.decoder_method == "RotateE":
+            # import ipdb;
+            # ipdb.set_trace()
+            re_head, im_head = torch.chunk(heads, 2, dim=1)
+            re_tail, im_tail = torch.chunk(tails, 2, dim=1)
+            # Make phases of relations uniformly distributed in [-pi, pi]
+            phase_relation = relations / ((self.gamma + self.epsilon) / (self.h_dim / 2) / np.pi)
+            re_relation = torch.cos(phase_relation)
+            im_relation = torch.sin(phase_relation)
+            re_score = re_head * re_relation - im_head * im_relation
+            im_score = re_head * im_relation + im_head * re_relation
+            re_score = re_score - re_tail
+            im_score = im_score - im_tail
+            score = torch.stack([re_score, im_score], dim=0)
+            score = score.norm(dim=0)
+            score = (self.gamma - score.sum(dim=1))
         return score
 
     def forward(self, g, h, r, norm):
@@ -57,17 +89,24 @@ class LinkPredict(nn.Module):
         # triplets is a list of data samples (positive and negative)
         # each row in the triplets is a 3-tuple of (source, relation, destination)
         score = self.calc_score(embed, triplets)
-        predict_loss = F.binary_cross_entropy_with_logits(score, labels)
+        if self.decoder_method == "RotateE":
+            positive_score = F.logsigmoid(score[labels==1]).mean()
+            negative_score = F.logsigmoid(-score[labels==0]).mean()
+            predict_loss = (-positive_score - negative_score)/2
+        else:
+            predict_loss = F.binary_cross_entropy_with_logits(score, labels)
         reg_loss = self.regularization_loss(embed)
         kl = self.model.get_kl(embed)
-        return predict_loss + self.reg_param * reg_loss + self.kl_param*kl, predict_loss, kl
+        return predict_loss + self.reg_param * reg_loss + self.kl_param * kl, predict_loss, kl
+
 
 def node_norm_to_edge_norm(g, node_norm):
     g = g.local_var()
     # convert to edge norm
     g.ndata['norm'] = node_norm
-    g.apply_edges(lambda edges : {'norm' : edges.dst['norm']})
+    g.apply_edges(lambda edges: {'norm': edges.dst['norm']})
     return g.edata['norm']
+
 
 def main(args):
     # load graph data
@@ -99,7 +138,11 @@ def main(args):
                         use_cuda=use_cuda,
                         reg_param=args.regularization,
                         kl_param=args.kl_param,
-                        k=10)
+                        k=10,
+                        decoder_method="RotateE",
+                        gamma=12,
+                        epsilon=2,
+                        )
 
     # validation and testing triplets
     valid_data = torch.LongTensor(valid_data)
@@ -186,7 +229,7 @@ def main(args):
         loss, pred_loss, kl = model.get_loss(g, embed, data, labels)
         t1 = time.time()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_norm) # clip gradients
+        torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_norm)  # clip gradients
         optimizer.step()
         t2 = time.time()
 
@@ -211,7 +254,7 @@ def main(args):
             # save best model
             if mrr < best_mrr:
                 torch.save({'state_dict': model.state_dict(), 'epoch': epoch},
-                            args.model_state_file+"_latest")
+                           args.model_state_file + "_latest")
             else:
                 best_mrr = mrr
                 torch.save({'state_dict': model.state_dict(), 'epoch': epoch},
@@ -227,43 +270,44 @@ def main(args):
     print("Mean Backward time: {:4f}s".format(np.mean(backward_time)))
 
 
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Link Prediction')
     parser.add_argument("--dropout", type=float, default=0.2,
-            help="dropout probability")
+                        help="dropout probability")
     parser.add_argument("--n-hidden", type=int, default=500,
-            help="number of hidden units")
+                        help="number of hidden units")
     parser.add_argument("--gpu", type=int, default=-1,
-            help="gpu")
+                        help="gpu")
     parser.add_argument("--lr", type=float, default=1e-3,
-            help="learning rate")
+                        help="learning rate")
     parser.add_argument("--n-bases", type=int, default=100,
-            help="number of weight blocks for each relation")
+                        help="number of weight blocks for each relation")
     parser.add_argument("--n-layers", type=int, default=2,
-            help="number of propagation rounds")
+                        help="number of propagation rounds")
     parser.add_argument("--n-epochs", type=int, default=1e5,
-            help="number of minimum training epochs")
+                        help="number of minimum training epochs")
     parser.add_argument("-d", "--dataset", type=str, required=True,
-            help="dataset to use")
+                        help="dataset to use")
     parser.add_argument("--eval-batch-size", type=int, default=400,
-            help="batch size when evaluating")
+                        help="batch size when evaluating")
     parser.add_argument("--regularization", type=float, default=0.01,
-            help="regularization weight")
+                        help="regularization weight")
+    parser.add_argument('--gamma', default=12.0, type=float,
+                        help="gamma for Hinge Loss")
     parser.add_argument("--kl-param", type=float, default=1e-4,
                         help="kl regularization weight")
     parser.add_argument("--grad-norm", type=float, default=1.0,
-            help="norm to clip gradient to")
+                        help="norm to clip gradient to")
     parser.add_argument("--graph-batch-size", type=int, default=20000,
-            help="number of edges to sample in each iteration")
+                        help="number of edges to sample in each iteration")
     parser.add_argument("--graph-split-size", type=float, default=0.5,
-            help="portion of edges used as positive sample")
-    parser.add_argument("--negative-sample", type=int, default=10,
-            help="number of negative samples per positive sample")
+                        help="portion of edges used as positive sample")
+    parser.add_argument("--negative-sample", type=int, default=1,
+                        help="number of negative samples per positive sample")
     parser.add_argument("--evaluate-every", type=int, default=5000,
-            help="perform evaluation every n epochs")
-    parser.add_argument("--edge-sampler", type=str, default="uniform",
-            help="type of edge sampler: 'uniform' or 'neighbor'")
+                        help="perform evaluation every n epochs")
+    parser.add_argument("--edge-sampler", type=str, default="neighbor",
+                        help="type of edge sampler: 'uniform' or 'neighbor'")
     parser.add_argument("--test-mode", type=bool, default=False,
                         help="only evaluate on test dataset")
     parser.add_argument("--model-state-file", type=str, default='model_state.pth',

@@ -10,7 +10,7 @@ class KGVAE(nn.Module):
     def __init__(self, num_nodes, h_dim, out_dim, num_rels, num_bases,
                  num_hidden_layers=1, dropout=0,
                  use_self_loop=False, use_cuda=False,
-                 k=1):
+                 k=1, gamma=12, epsilon=2):
         super(KGVAE, self).__init__()
         self.num_nodes = num_nodes
         self.h_dim = h_dim
@@ -21,20 +21,23 @@ class KGVAE(nn.Module):
         self.dropout = dropout
         self.use_self_loop = use_self_loop
         self.use_cuda = use_cuda
-        self.k = k # mixture of gaussian
-        self.build_encoder()
-
-        # Mixture of Gaussians prior
+        # RotateE initiation params
+        self.gamma = gamma
+        self.epsilon = epsilon
+        # Mixture of Gaussians parameters
+        self.k = k
         self.z_pre = torch.nn.Parameter(torch.randn(1, 2 * self.k, self.h_dim) / np.sqrt(self.k * self.h_dim))
-        # Uniform weighting
         self.pi = torch.nn.Parameter(torch.ones(k) / k, requires_grad=False)
 
+        # Build model
+        self.build_encoder()
+
     def build_encoder(self):
-        self.input_layer = EmbeddingLayer(self.num_nodes, self.h_dim)
+        self.input_layer = EmbeddingLayer(self.num_nodes, self.h_dim, self.gamma, self.epsilon)
         self.rconv_layer_1 = RelGraphConv(self.h_dim, self.h_dim, self.num_rels, "bdd",
                                           self.num_bases, activation=nn.ReLU(), self_loop=True,
                                           dropout=self.dropout)
-        self.rconv_layer_2 = RelGraphConv(self.h_dim, self.h_dim*2, self.num_rels, "bdd",
+        self.rconv_layer_2 = RelGraphConv(self.h_dim, self.h_dim * 2, self.num_rels, "bdd",
                                           self.num_bases, activation=lambda x: x, self_loop=True,
                                           dropout=self.dropout)
 
@@ -58,7 +61,7 @@ class KGVAE(nn.Module):
         kl = torch.mean(utils.log_normal(z, m, v) - utils.log_normal_mixture(z, m_mixture, z_mixture))
         return kl
 
-    def forward(self, g, h, r, norm):
+    def 2(self, g, h, r, norm):
         self.node_id = h.squeeze()
         h = self.input_layer(g, h, r, norm)
         h = self.rconv_layer_1(g, h, r, norm)
@@ -127,12 +130,19 @@ class BaseRGCN(nn.Module):
 
 
 class EmbeddingLayer(nn.Module):
-    def __init__(self, num_nodes, h_dim):
+    def __init__(self, num_nodes, h_dim, gamma=0, epsilon=0):
         super(EmbeddingLayer, self).__init__()
         self.embedding = nn.Embedding(num_nodes, h_dim)
+        if gamma != 0:
+            nn.init.uniform_(
+                tensor=self.embedding.weight,
+                a=-(gamma + epsilon) / (h_dim / 2),
+                b=(gamma + epsilon) / (h_dim / 2)
+            )
 
     def forward(self, g, h, r, norm):
         return self.embedding(h.squeeze())
+
 
 class DistLayer(nn.Module):
     def __init__(self, in_dim, out_dim):
@@ -142,6 +152,7 @@ class DistLayer(nn.Module):
     def forward(self, g, h, r, norm):
         return self.linear(h.squeeze())
 
+
 class RGCN(BaseRGCN):
     def build_input_layer(self):
         return EmbeddingLayer(self.num_nodes, self.h_dim)
@@ -149,6 +160,5 @@ class RGCN(BaseRGCN):
     def build_hidden_layer(self, idx):
         act = F.relu if idx < self.num_hidden_layers - 1 else None
         return RelGraphConv(self.h_dim, self.h_dim, self.num_rels, "bdd",
-                self.num_bases, activation=act, self_loop=True,
-                dropout=self.dropout)
-
+                            self.num_bases, activation=act, self_loop=True,
+                            dropout=self.dropout)

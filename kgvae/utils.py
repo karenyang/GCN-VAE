@@ -183,7 +183,8 @@ def sort_and_rank(score, target):
     return indices
 
 
-def perturb_and_get_rank(embedding, w, a, r, b, test_size, batch_size=100, all_batches=True, decoder_method="RotateE", gamma=12, epsilon=2):
+def perturb_and_get_rank(embedding, w, a, r, b, test_size, batch_size=100, all_batches=True, decoder_method="RotateE",
+                         gamma=12, epsilon=2):
     """ Perturb one element in the triplets
     """
     n_batch = (test_size + batch_size - 1) // batch_size
@@ -205,7 +206,7 @@ def perturb_and_get_rank(embedding, w, a, r, b, test_size, batch_size=100, all_b
             score = torch.sum(out_prod, dim=0)  # size E x V
             score = torch.sigmoid(score)
         elif decoder_method == 'RotateE':
-            re_head, im_head = torch.chunk(batch_a, 2, dim=1)
+            re_head, im_head = torch.chunk(embedding[batch_a], 2, dim=1)
             re_tail, im_tail = torch.chunk(embedding, 2, dim=1)
             relations = w[batch_r]
             # Make phases of relations uniformly distributed in [-pi, pi]
@@ -214,11 +215,11 @@ def perturb_and_get_rank(embedding, w, a, r, b, test_size, batch_size=100, all_b
             im_relation = torch.sin(phase_relation)
             re_score = re_head * re_relation - im_head * im_relation
             im_score = re_head * im_relation + im_head * re_relation
-            re_score = re_score - re_tail
-            im_score = im_score - im_tail
+            re_score = re_score.transpose(0, 1).unsqueeze(2) - re_tail.transpose(0, 1).unsqueeze(1)
+            im_score = im_score.transpose(0, 1).unsqueeze(2) - im_tail.transpose(0, 1).unsqueeze(1)
             score = torch.stack([re_score, im_score], dim=0)
-            score = score.norm(dim=0)
-            score = (gamma - score.sum(dim=1))
+            score = score.norm(dim=0)  # size D x E x V
+            score = (gamma - score.sum(dim=0))  # size E x V
 
         target = b[batch_start: batch_end]
         ranks.append(sort_and_rank(score, target))

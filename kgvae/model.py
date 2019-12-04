@@ -61,7 +61,7 @@ class KGVAE(nn.Module):
         kl = torch.mean(utils.log_normal(z, m, v) - utils.log_normal_mixture(z, m_mixture, z_mixture))
         return kl
 
-    def 2(self, g, h, r, norm):
+    def forward(self, g, h, r, norm):
         self.node_id = h.squeeze()
         h = self.input_layer(g, h, r, norm)
         h = self.rconv_layer_1(g, h, r, norm)

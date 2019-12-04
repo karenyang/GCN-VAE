@@ -242,7 +242,7 @@ if __name__ == '__main__':
             help="number of weight blocks for each relation")
     parser.add_argument("--n-layers", type=int, default=2,
             help="number of propagation rounds")
-    parser.add_argument("--n-epochs", type=int, default=50000,
+    parser.add_argument("--n-epochs", type=int, default=1e5,
             help="number of minimum training epochs")
     parser.add_argument("-d", "--dataset", type=str, required=True,
             help="dataset to use")

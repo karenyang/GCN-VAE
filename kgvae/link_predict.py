@@ -29,21 +29,23 @@ import utils
 
 class LinkPredict(nn.Module):
     def __init__(self, model_class, in_dim, h_dim, num_rels, num_bases=-1,
-                 num_hidden_layers=1, dropout=0, use_cuda=False, reg_param=0, kl_param=0, k=1):
+                 num_hidden_layers=1, dropout=0, use_cuda=False, reg_param=0, kl_param=0, mmd_param=0, k=1):
         super(LinkPredict, self).__init__()
         self.model = model_class(in_dim, h_dim, h_dim, num_rels * 2, num_bases,
-                         num_hidden_layers, dropout, use_cuda)
+                                 num_hidden_layers, dropout, use_cuda, k=k)
         self.reg_param = reg_param
         self.kl_param = kl_param
+        self.mmd_param = mmd_param
         self.w_relation = nn.Parameter(torch.Tensor(num_rels, h_dim))
+        self.use_cuda= use_cuda
         nn.init.xavier_uniform_(self.w_relation,
                                 gain=nn.init.calculate_gain('relu'))
 
     def calc_score(self, embedding, triplets):
         # DistMult
-        s = embedding[triplets[:,0]]
-        r = self.w_relation[triplets[:,1]]
-        o = embedding[triplets[:,2]]
+        s = embedding[triplets[:, 0]]
+        r = self.w_relation[triplets[:, 1]]
+        o = embedding[triplets[:, 2]]
         score = torch.sum(s * r * o, dim=1)
         return score
 
@@ -60,14 +62,23 @@ class LinkPredict(nn.Module):
         predict_loss = F.binary_cross_entropy_with_logits(score, labels)
         reg_loss = self.regularization_loss(embed)
         kl = self.model.get_kl(embed)
-        return predict_loss + self.reg_param * reg_loss + self.kl_param*kl, predict_loss, kl
+        if self.mmd_param > 0:
+            mmd = self.model.get_mmd(embed)
+        else:
+            mmd = nn.Parameter(torch.zeros(1), requires_grad=False)
+            if self.use_cuda:
+                mmd = mmd.cuda()
+        loss = predict_loss + self.reg_param * reg_loss + self.kl_param * kl + self.mmd_param * mmd
+        return loss, predict_loss, kl, mmd
+
 
 def node_norm_to_edge_norm(g, node_norm):
     g = g.local_var()
     # convert to edge norm
     g.ndata['norm'] = node_norm
-    g.apply_edges(lambda edges : {'norm' : edges.dst['norm']})
+    g.apply_edges(lambda edges: {'norm': edges.dst['norm']})
     return g.edata['norm']
+
 
 def main(args):
     # load graph data
@@ -99,7 +110,8 @@ def main(args):
                         use_cuda=use_cuda,
                         reg_param=args.regularization,
                         kl_param=args.kl_param,
-                        k=10)
+                        mmd_param=args.mmd_param,
+                        k=args.mog_k)
 
     # validation and testing triplets
     valid_data = torch.LongTensor(valid_data)
@@ -183,17 +195,17 @@ def main(args):
 
         t0 = time.time()
         embed = model(g, node_id, edge_type, edge_norm)
-        loss, pred_loss, kl = model.get_loss(g, embed, data, labels)
+        loss, pred_loss, kl, mmd = model.get_loss(g, embed, data, labels)
         t1 = time.time()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_norm) # clip gradients
+        torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_norm)  # clip gradients
         optimizer.step()
         t2 = time.time()
 
         forward_time.append(t1 - t0)
         backward_time.append(t2 - t1)
-        print("Epoch {:04d} | Loss {:.4f} | Best MRR {:.4f} | pred_loss {:.4f} | kl {:.4f}".
-              format(epoch, loss.item(), best_mrr, pred_loss.item(), kl.item()))
+        print("Epoch {:04d} | Loss {:.4f} | Best MRR {:.4f} | pred_loss {:.4f} | kl {:.4f} | mmd {:.4f}".
+              format(epoch, loss.item(), best_mrr, pred_loss.item(), kl.item(), mmd.item()))
 
         optimizer.zero_grad()
 
@@ -211,7 +223,7 @@ def main(args):
             # save best model
             if mrr < best_mrr:
                 torch.save({'state_dict': model.state_dict(), 'epoch': epoch},
-                            args.model_state_file+"_latest")
+                           args.model_state_file + "_latest")
             else:
                 best_mrr = mrr
                 torch.save({'state_dict': model.state_dict(), 'epoch': epoch},
@@ -252,6 +264,10 @@ if __name__ == '__main__':
             help="regularization weight")
     parser.add_argument("--kl-param", type=float, default=1e-4,
                         help="kl regularization weight")
+    parser.add_argument("--mmd-param", type=float, default=0,
+                        help="mmd regularization weight")
+    parser.add_argument("--mog-k", type=int, default=10,
+                        help="number of mixture of gaussian")
     parser.add_argument("--grad-norm", type=float, default=1.0,
             help="norm to clip gradient to")
     parser.add_argument("--graph-batch-size", type=int, default=20000,

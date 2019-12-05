@@ -4,13 +4,13 @@ import torch.nn.functional as F
 from dgl.nn.pytorch import RelGraphConv
 import numpy as np
 import utils
-
+import random
 
 class KGVAE(nn.Module):
     def __init__(self, num_nodes, h_dim, out_dim, num_rels, num_bases,
                  num_hidden_layers=1, dropout=0,
                  use_self_loop=False, use_cuda=False,
-                 k=1):
+                 k=10):
         super(KGVAE, self).__init__()
         self.num_nodes = num_nodes
         self.h_dim = h_dim
@@ -22,6 +22,7 @@ class KGVAE(nn.Module):
         self.use_self_loop = use_self_loop
         self.use_cuda = use_cuda
         self.k = k # mixture of gaussian
+        print(f"Mixture of {self.k} Gaussians.")
         self.build_encoder()
 
         # Mixture of Gaussians prior
@@ -44,6 +45,17 @@ class KGVAE(nn.Module):
         m, v = m[idx], v[idx]
         return utils.sample_gaussian(m, v)
 
+    def compute_kernel(self, x, y):
+        x_size = x.size(0)
+        y_size = y.size(0)
+        dim = x.size(1)
+        x = x.unsqueeze(1)  # (x_size, 1, dim)
+        y = y.unsqueeze(0)  # (1, y_size, dim)
+        tiled_x = x.expand(x_size, y_size, dim)
+        tiled_y = y.expand(x_size, y_size, dim)
+        kernel_input = (tiled_x - tiled_y).pow(2).mean(2) / float(dim)
+        return torch.exp(-kernel_input)  # (x_size, y_size)
+
     def get_kl(self, z):
         m_mixture, z_mixture = utils.gaussian_parameters(self.z_pre, dim=1)
         m = self.z_mean
@@ -52,11 +64,16 @@ class KGVAE(nn.Module):
         return kl
 
     def get_mmd(self, z):
-        m_mixture, z_mixture = utils.gaussian_parameters(self.z_pre, dim=1)
-        m = self.z_mean
-        v = self.z_sigma
-        kl = torch.mean(utils.log_normal(z, m, v) - utils.log_normal_mixture(z, m_mixture, z_mixture))
-        return kl
+        m_mixture, s_mixture = utils.gaussian_parameters(self.z_pre, dim=1)
+        num_sample = 200
+        z_pri = utils.sample_gaussian(m_mixture, s_mixture, repeat=num_sample//self.k)
+        # (Monte Carlo) sample the z otherwise GPU will be out of memory
+        z_post_samples = z[random.sample(range(z.shape[0]), num_sample)]
+        prior_z_kernel = self.compute_kernel(z_pri, z_pri)
+        posterior_z_kernel = self.compute_kernel(z_post_samples, z_post_samples)
+        mixed_kernel = self.compute_kernel(z_pri, z_post_samples)
+        mmd = prior_z_kernel.mean() + posterior_z_kernel.mean() - 2 * mixed_kernel.mean()
+        return mmd
 
     def forward(self, g, h, r, norm):
         self.node_id = h.squeeze()

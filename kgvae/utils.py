@@ -254,7 +254,7 @@ def gaussian_parameters(h, dim=-1):
     v = F.softplus(h) + 1e-8
     return m, v
 
-def sample_gaussian(m, v):
+def sample_gaussian(m, v, repeat=1):
     """
     Element-wise application reparameterization trick to sample from Gaussian
 
@@ -265,7 +265,13 @@ def sample_gaussian(m, v):
     Return:
         z: tensor: (batch, ...): Samples
     """
-    sqrt_v = torch.sqrt(v)
+    if repeat > 1:
+        v = v.squeeze()
+        m = m.squeeze()
+        sqrt_v = torch.cat([torch.sqrt(v)]*repeat, dim=0)
+        m = torch.cat([m]*repeat, dim=0)
+    else:
+        sqrt_v = torch.sqrt(v)
     sample = m + torch.randn_like(sqrt_v) * sqrt_v
     return sample
 

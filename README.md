@@ -1,2 +1,2 @@
 # KGVAE
-project GAT-VAE for knowledge graphs
+project GCN-VAE for knowledge graphs

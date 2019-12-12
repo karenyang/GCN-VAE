@@ -9,6 +9,8 @@ import numpy as np
 import torch
 import dgl
 import torch.nn.functional as F
+
+
 #######################################################################
 #
 # Utility function for building training and testing graphs
@@ -19,13 +21,14 @@ def get_adj_and_degrees(num_nodes, triplets):
     """ Get adjacency list and degrees of the graph
     """
     adj_list = [[] for _ in range(num_nodes)]
-    for i,triplet in enumerate(triplets):
+    for i, triplet in enumerate(triplets):
         adj_list[triplet[0]].append([i, triplet[2]])
         adj_list[triplet[2]].append([i, triplet[0]])
 
     degrees = np.array([len(a) for a in adj_list])
     adj_list = [np.array(a) for a in adj_list]
     return adj_list, degrees
+
 
 def sample_edge_neighborhood(adj_list, degrees, n_triplets, sample_size):
     """Sample edges by neighborhool expansion.
@@ -35,7 +38,7 @@ def sample_edge_neighborhood(adj_list, degrees, n_triplets, sample_size):
     """
     edges = np.zeros((sample_size), dtype=np.int32)
 
-    #initialize
+    # initialize
     sample_counts = np.array([d for d in degrees])
     picked = np.array([False for _ in range(n_triplets)])
     seen = np.array([False for _ in degrees])
@@ -50,6 +53,7 @@ def sample_edge_neighborhood(adj_list, degrees, n_triplets, sample_size):
         probabilities = (weights) / np.sum(weights)
         chosen_vertex = np.random.choice(np.arange(degrees.shape[0]),
                                          p=probabilities)
+
         chosen_adj_list = adj_list[chosen_vertex]
         seen[chosen_vertex] = True
 
@@ -71,10 +75,12 @@ def sample_edge_neighborhood(adj_list, degrees, n_triplets, sample_size):
 
     return edges
 
+
 def sample_edge_uniform(adj_list, degrees, n_triplets, sample_size):
     """Sample edges uniformly from all the edges."""
     all_edges = np.arange(n_triplets)
     return np.random.choice(all_edges, sample_size, replace=False)
+
 
 def generate_sampled_graph_and_labels(triplets, sample_size, split_size,
                                       num_rels, adj_list, degrees,
@@ -95,6 +101,7 @@ def generate_sampled_graph_and_labels(triplets, sample_size, split_size,
     edges = triplets[edges]
     src, rel, dst = np.array(edges).transpose()
     uniq_v, edges = np.unique((src, dst), return_inverse=True)
+
     src, dst = np.reshape(edges, (2, -1))
     relabeled_edges = np.stack((src, rel, dst)).transpose()
 
@@ -116,12 +123,14 @@ def generate_sampled_graph_and_labels(triplets, sample_size, split_size,
                                              (src, rel, dst))
     return g, uniq_v, rel, norm, samples, labels
 
+
 def comp_deg_norm(g):
     g = g.local_var()
     in_deg = g.in_degrees(range(g.number_of_nodes())).float().numpy()
     norm = 1.0 / in_deg
     norm[np.isinf(norm)] = 0
     return norm
+
 
 def build_graph_from_triplets(num_nodes, num_rels, triplets):
     """ Create a DGL graph. The graph is bidirectional because RGCN authors
@@ -140,9 +149,11 @@ def build_graph_from_triplets(num_nodes, num_rels, triplets):
     norm = comp_deg_norm(g)
     return g, rel, norm
 
+
 def build_test_graph(num_nodes, num_rels, edges):
     src, rel, dst = np.array(edges).transpose()
     return build_graph_from_triplets(num_nodes, num_rels, (src, rel, dst))
+
 
 def negative_sampling(pos_samples, num_entity, negative_rate):
     size_of_batch = len(pos_samples)
@@ -159,6 +170,7 @@ def negative_sampling(pos_samples, num_entity, negative_rate):
 
     return np.concatenate((pos_samples, neg_samples)), labels
 
+
 #######################################################################
 #
 # Utility function for evaluations
@@ -172,14 +184,15 @@ def sort_and_rank(score, target):
     return indices
 
 
-def perturb_and_get_rank(embedding, w, a, r, b, test_size, batch_size=100, all_batches=True):
+def perturb_and_get_rank(embedding, w, a, r, b, test_size, batch_size=100, all_batches=True, flow_log_prob=None):
     """ Perturb one element in the triplets
     """
     n_batch = (test_size + batch_size - 1) // batch_size
     ranks = []
     if all_batches is False:
         n_batch = 1
-    for idx in range(n_batch): #n_batch TODO
+    # import ipdb;ipdb.set_trace()
+    for idx in range(n_batch):  # n_batch TODO
         batch_start = idx * batch_size
         batch_end = min(test_size, (idx + 1) * batch_size)
         batch_a = a[batch_start: batch_end]
@@ -190,6 +203,8 @@ def perturb_and_get_rank(embedding, w, a, r, b, test_size, batch_size=100, all_b
         # out-prod and reduce sum
         out_prod = torch.bmm(emb_ar, emb_c) # size D x E x V
         score = torch.sum(out_prod, dim=0) # size E x V
+        if score is not None:
+            score = score + flow_log_prob
         score = torch.sigmoid(score)
         target = b[batch_start: batch_end]
         ranks.append(sort_and_rank(score, target))
@@ -201,12 +216,81 @@ def perturb_and_get_rank(embedding, w, a, r, b, test_size, batch_size=100, all_b
         for hit in [1,5,10]:
             avg_count.append( torch.mean((_running_ranks <= hit).float()).item())
         print("batch {} / {}: MR : {:.6f} |  MRR : {:.6f} | Hit1: {:.6f} | Hit5: {:.6f} | Hit10: {:.6f}".format(
-            idx, n_batch, mr.item(), mrr.item(), avg_count[0], avg_count[1], avg_count[2] ) )
+            idx, n_batch, mr.item(), mrr.item(), avg_count[0], avg_count[1], avg_count[2]))
 
     return torch.cat(ranks)
 
-# return MRR (raw), and Hits @ (1, 3, 10)
-def calc_mrr(embedding, w, test_triplets, hits=[], eval_bz=100, all_batches=True):
+
+def print_triplets(entities, relations, entities_names, a, r, b, c):
+    lists = []
+    for i in range(len(a)):
+        if 2160 not in a and 2160 not in b and 2160 not in c: # only look at Obama Egonet
+            continue
+        else:
+            print("found obama")
+            # import ipdb;ipdb.set_trace()
+            if entities[a[i]] in entities_names and entities[b[i]] in entities_names and entities[c[i]] in entities_names:
+                if 'obama' in entities_names[entities[a[i]]].lower() or\
+                    'obama' in entities_names[entities[b[i]]].lower() or\
+                    'obama' in entities_names[entities[c[i]]].lower():
+                    # unfortunately the database is not maintained anymore. I could only get partial entity-name pairs
+                    lists.append(
+                        ' - '.join([entities_names[entities[a[i]]], relations[r[i]], entities_names[entities[b[i]]]]) + '\n')
+                    if c[i] != b[i]:
+                        lists.append(
+                            ' = '.join([entities_names[entities[a[i]]], relations[r[i]], entities_names[entities[c[i]]]]) + '\n')
+    return lists
+
+
+def generate(embedding, w, test_triplets, eval_bz=200):
+    import pickle
+    with open("mid2name.pkl", 'rb') as f:
+        entities_names = pickle.load(f)
+    with open("/home/karen/.dgl/FB15k-237/relations.dict", 'r') as f:
+        relations = f.read().split('\n')
+    for i in range(len(relations)):
+        relations[i] = relations[i].split('\t')[-1]
+    with open("/home/karen/.dgl/FB15k-237/entities.dict", 'r') as f:
+        entities = f.read().split('\n')
+    for i in range(len(entities)):
+        entities[i] = entities[i].split('\t')[-1]
+
+    f = open("result.txt", 'w+')
+    with torch.no_grad():
+        a = test_triplets[:, 0]
+        r = test_triplets[:, 1]
+        b = test_triplets[:, 2]
+        test_size = test_triplets.shape[0]
+        n_batch = (test_size + eval_bz - 1) // eval_bz
+        ranks = []
+        for idx in range(n_batch):  # n_batch TODO
+            if 2160 not in a:
+                continue
+            batch_start = idx * eval_bz
+            batch_end = min(test_size, (idx + 1) * eval_bz)
+            batch_a = a[batch_start: batch_end]
+            batch_r = r[batch_start: batch_end]
+            emb_ar = embedding[batch_a] * w[batch_r]
+            emb_ar = emb_ar.transpose(0, 1).unsqueeze(2)  # size: D x E x 1
+            emb_c = embedding.transpose(0, 1).unsqueeze(1)  # size: D x 1 x V
+            # out-prod and reduce sum
+            out_prod = torch.bmm(emb_ar, emb_c)  # size D x E x V
+            score = torch.sum(out_prod, dim=0)  # size E x V
+            score = torch.sigmoid(score)
+            target = b[batch_start: batch_end]
+            highest_scored = score.argmax(dim=-1)
+            knowledge = print_triplets(entities, relations, entities_names, batch_a, batch_r, target, highest_scored)
+            for i in range(len(knowledge)):
+                f.write(knowledge[i])
+                f.write("\n")
+            f.flush()
+
+        return
+
+    # return MRR (raw), and Hits @ (1, 3, 10)
+
+
+def calc_mrr(embedding, w, test_triplets, hits=[], eval_bz=100, all_batches=True, flow_log_prob=None):
     with torch.no_grad():
         s = test_triplets[:, 0]
         r = test_triplets[:, 1]
@@ -214,12 +298,12 @@ def calc_mrr(embedding, w, test_triplets, hits=[], eval_bz=100, all_batches=True
         test_size = test_triplets.shape[0]
 
         # perturb subject
-        ranks_s = perturb_and_get_rank(embedding, w, o, r, s, test_size, eval_bz, all_batches)
+        ranks_s = perturb_and_get_rank(embedding, w, o, r, s, test_size, eval_bz, all_batches, flow_log_prob)
         # perturb object
-        ranks_o = perturb_and_get_rank(embedding, w, s, r, o, test_size, eval_bz, all_batches)
+        ranks_o = perturb_and_get_rank(embedding, w, s, r, o, test_size, eval_bz, all_batches, flow_log_prob)
 
         ranks = torch.cat([ranks_s, ranks_o])
-        ranks += 1 # change to 1-indexed
+        ranks += 1  # change to 1-indexed
 
         mrr = torch.mean(1.0 / ranks.float())
         print("MRR (raw): {:.6f}".format(mrr.item()))
@@ -254,6 +338,7 @@ def gaussian_parameters(h, dim=-1):
     v = F.softplus(h) + 1e-8
     return m, v
 
+
 def sample_gaussian(m, v, repeat=1):
     """
     Element-wise application reparameterization trick to sample from Gaussian
@@ -268,12 +353,13 @@ def sample_gaussian(m, v, repeat=1):
     if repeat > 1:
         v = v.squeeze()
         m = m.squeeze()
-        sqrt_v = torch.cat([torch.sqrt(v)]*repeat, dim=0)
-        m = torch.cat([m]*repeat, dim=0)
+        sqrt_v = torch.cat([torch.sqrt(v)] * repeat, dim=0)
+        m = torch.cat([m] * repeat, dim=0)
     else:
         sqrt_v = torch.sqrt(v)
     sample = m + torch.randn_like(sqrt_v) * sqrt_v
     return sample
+
 
 def log_normal_mixture(z, m, v):
     """
@@ -290,6 +376,7 @@ def log_normal_mixture(z, m, v):
     log_prob = log_normal(z.unsqueeze(1), m, v)
     log_prob = log_mean_exp(log_prob, dim=-1)
     return log_prob
+
 
 def log_normal(x, m, v):
     """
@@ -310,6 +397,7 @@ def log_normal(x, m, v):
     log_prob = torch.sum(log_prob, dim=-1)
     return log_prob
 
+
 def log_sum_exp(x, dim=0):
     """
     Compute the log(sum(exp(x), dim)) in a numerically stable manner
@@ -325,6 +413,7 @@ def log_sum_exp(x, dim=0):
     new_x = x - max_x.unsqueeze(dim).expand_as(x)
     return max_x + (new_x.exp().sum(dim)).log()
 
+
 def log_mean_exp(x, dim):
     """
     Compute the log(mean(exp(x), dim)) in a numerically stable manner
@@ -337,4 +426,3 @@ def log_mean_exp(x, dim):
         _: tensor: (...): log(mean(exp(x), dim))
     """
     return log_sum_exp(x, dim) - np.log(x.size(dim))
-
